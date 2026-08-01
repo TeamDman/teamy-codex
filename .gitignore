@@ -1,0 +1,18 @@
+/target/
+
+# Codex user state must never be committed.
+.codex/
+state_*.sqlite
+state_*.sqlite-*
+*.sqlite
+*.sqlite-*
+rollouts/
+logs/
+*.ndjson
+
+# Local profiling/build artifacts.
+tracy/
+*.tracy
+*.ansi.log
+*.top-spans.csv
+*.profile-run.json
