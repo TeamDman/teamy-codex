@@ -48,3 +48,7 @@ The project follows the current `teamy-rust-cli` conventions for build
 metadata, cancellation, logging, explicit tracing features, output rendering,
 nightly formatting, Clippy, and Tracy profiling. `teamy-profiler` is an
 external development tool and is not vendored here.
+
+## See also
+
+https://github.com/0xSero/ai-data-extraction/blob/main/extract_codex.py
