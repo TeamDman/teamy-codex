@@ -4,9 +4,9 @@ use eyre::Context;
 use eyre::ContextCompat;
 use eyre::bail;
 use facet::Facet;
+use facet_json::RawJson;
 use rusqlite::Connection;
 use rusqlite::params;
-use serde_json::Value;
 use std::fs::File;
 use std::io::BufRead;
 use std::io::BufReader;
@@ -36,6 +36,22 @@ pub struct ThreadMessage {
     pub role: String,
     pub phase: Option<String>,
     pub text: String,
+}
+
+#[derive(Facet, Debug)]
+struct RolloutEvent<'a> {
+    #[facet(rename = "type")]
+    kind: Option<RawJson<'a>>,
+    timestamp: Option<RawJson<'a>>,
+    payload: Option<RawJson<'a>>,
+}
+
+#[derive(Facet, Debug)]
+struct RolloutPayload<'a> {
+    #[facet(rename = "type")]
+    kind: Option<RawJson<'a>>,
+    message: Option<RawJson<'a>>,
+    phase: Option<RawJson<'a>>,
 }
 
 pub fn resolve_codex_home(raw: Option<&str>) -> eyre::Result<PathBuf> {
@@ -110,42 +126,55 @@ pub fn list_thread_messages(
     let mut messages = Vec::new();
 
     for line in reader.lines() {
-        let event: Value = serde_json::from_str(&line?)?;
-        if event.get("type").and_then(Value::as_str) != Some("event_msg") {
-            continue;
+        if let Some(message) = parse_thread_message(&line?, messages.len() + 1)? {
+            messages.push(message);
         }
-        let Some(payload) = event.get("payload").and_then(Value::as_object) else {
-            continue;
-        };
-        let Some(payload_type) = payload.get("type").and_then(Value::as_str) else {
-            continue;
-        };
-        let role = match payload_type {
-            "user_message" => "user",
-            "agent_message" => "assistant",
-            _ => continue,
-        };
-        let Some(text) = payload.get("message").and_then(Value::as_str) else {
-            continue;
-        };
-        messages.push(ThreadMessage {
-            index: messages.len() + 1,
-            timestamp: event
-                .get("timestamp")
-                .and_then(Value::as_str)
-                .map(ToOwned::to_owned),
-            role: role.to_owned(),
-            phase: payload
-                .get("phase")
-                .and_then(Value::as_str)
-                .map(ToOwned::to_owned),
-            text: text.to_owned(),
-        });
         if messages.len() >= limit {
             break;
         }
     }
     Ok(messages)
+}
+
+fn parse_thread_message(line: &str, index: usize) -> eyre::Result<Option<ThreadMessage>> {
+    let raw_event: RawJson<'_> = facet_json::from_str_borrowed(line)?;
+    let Ok(event) = facet_json::from_str_borrowed::<RolloutEvent<'_>>(raw_event.as_str()) else {
+        return Ok(None);
+    };
+    if raw_json_string(event.kind.as_ref()).as_deref() != Some("event_msg") {
+        return Ok(None);
+    }
+
+    let Some(raw_payload) = event.payload.as_ref() else {
+        return Ok(None);
+    };
+    let Ok(payload) = facet_json::from_str_borrowed::<RolloutPayload<'_>>(raw_payload.as_str())
+    else {
+        return Ok(None);
+    };
+    let role = match raw_json_string(payload.kind.as_ref()).as_deref() {
+        Some("user_message") => "user",
+        Some("agent_message") => "assistant",
+        _ => return Ok(None),
+    };
+    let Some(text) = raw_json_string(payload.message.as_ref()) else {
+        return Ok(None);
+    };
+
+    Ok(Some(ThreadMessage {
+        index,
+        timestamp: raw_json_string(event.timestamp.as_ref()),
+        role: role.to_owned(),
+        phase: raw_json_string(payload.phase.as_ref()),
+        text,
+    }))
+}
+
+fn raw_json_string(value: Option<&RawJson<'_>>) -> Option<String> {
+    let raw = value?.as_str().trim_start();
+    raw.starts_with('"')
+        .then(|| facet_json::from_str(raw).ok())
+        .flatten()
 }
 
 fn open_state_database(codex_home: &Path) -> eyre::Result<Connection> {
@@ -169,4 +198,55 @@ fn find_rollout_path(codex_home: &Path, thread_id: &str) -> eyre::Result<PathBuf
 fn normalize_extended_path(path: &str) -> String {
     path.strip_prefix(r"\\?\")
         .map_or_else(|| path.to_owned(), ToOwned::to_owned)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_rollout_message_from_raw_json() {
+        let line = r#"{
+            "timestamp": "2026-08-15T01:02:03Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "agent_message",
+                "message": "first line\nsecond line",
+                "phase": "commentary",
+                "ignored": {"nested": true}
+            }
+        }"#;
+
+        let message = parse_thread_message(line, 7)
+            .expect("valid JSON should parse")
+            .expect("agent message should be returned");
+
+        assert_eq!(message.index, 7);
+        assert_eq!(message.timestamp.as_deref(), Some("2026-08-15T01:02:03Z"));
+        assert_eq!(message.role, "assistant");
+        assert_eq!(message.phase.as_deref(), Some("commentary"));
+        assert_eq!(message.text, "first line\nsecond line");
+    }
+
+    #[test]
+    fn ignores_non_string_optional_rollout_fields() {
+        let line = r#"{
+            "timestamp": 42,
+            "type": "event_msg",
+            "payload": {
+                "type": "user_message",
+                "message": "hello",
+                "phase": false
+            }
+        }"#;
+
+        let message = parse_thread_message(line, 1)
+            .expect("valid JSON should parse")
+            .expect("user message should be returned");
+
+        assert_eq!(message.timestamp, None);
+        assert_eq!(message.role, "user");
+        assert_eq!(message.phase, None);
+        assert_eq!(message.text, "hello");
+    }
 }

@@ -1,5 +1,6 @@
 use crate::cli::global_args::GlobalArgs;
 use crate::cli::output::CliOutput;
+use crate::cli::thread::inventory::ThreadInventoryArgs;
 use crate::cli::thread::list::ThreadListArgs;
 use crate::cli::thread::message::ThreadMessageArgs;
 use arbitrary::Arbitrary;
@@ -16,6 +17,7 @@ pub struct ThreadArgs {
 #[derive(Facet, Arbitrary, Debug, PartialEq)]
 #[repr(u8)]
 pub enum ThreadCommand {
+    Inventory(ThreadInventoryArgs),
     List(ThreadListArgs),
     Message(ThreadMessageArgs),
 }
@@ -30,6 +32,7 @@ impl ThreadArgs {
         cancellation_token: CancellationToken,
     ) -> eyre::Result<CliOutput> {
         match self.command {
+            ThreadCommand::Inventory(args) => args.invoke(global_args, cancellation_token).await,
             ThreadCommand::List(args) => args.invoke(global_args, cancellation_token).await,
             ThreadCommand::Message(args) => args.invoke(global_args, cancellation_token).await,
         }

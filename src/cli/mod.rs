@@ -1,3 +1,4 @@
+pub mod backup;
 pub mod global_args;
 pub mod output;
 pub mod thread;
@@ -45,6 +46,7 @@ impl Cli {
 #[derive(Facet, Arbitrary, Debug, PartialEq)]
 #[repr(u8)]
 pub enum Command {
+    Backup(backup::BackupArgs),
     Thread(ThreadArgs),
 }
 
@@ -59,6 +61,7 @@ impl Command {
     ) -> eyre::Result<CliOutput> {
         cancellation_token.bail_if_cancelled()?;
         match self {
+            Self::Backup(args) => args.invoke(global_args, cancellation_token).await,
             Self::Thread(args) => args.invoke(global_args, cancellation_token).await,
         }
     }

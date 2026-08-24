@@ -14,6 +14,7 @@ fn main() {
 
     for (name, args) in [
         ("GIT_REVISION", vec!["rev-parse", "--short", "HEAD"]),
+        ("GIT_REVISION_FULL", vec!["rev-parse", "HEAD"]),
         ("GIT_BRANCH", vec!["branch", "--show-current"]),
         ("GIT_REPOSITORY_URL", vec!["remote", "get-url", "origin"]),
     ] {
@@ -32,6 +33,30 @@ fn main() {
         },
     );
     println!("cargo:rustc-env=GIT_WORKTREE_STATUS={dirty}");
+    let dirty_all = git_output_allow_empty(&["status", "--short"]).map_or_else(
+        || String::from("unknown"),
+        |status| {
+            if status.is_empty() {
+                "clean".to_owned()
+            } else {
+                "dirty".to_owned()
+            }
+        },
+    );
+    println!("cargo:rustc-env=GIT_WORKTREE_STATUS_ALL={dirty_all}");
+
+    for (cargo_name, rustc_name) in [("TARGET", "BUILD_TARGET"), ("PROFILE", "BUILD_PROFILE")] {
+        let value = std::env::var(cargo_name).unwrap_or_else(|_| String::from("unknown"));
+        println!("cargo:rustc-env={rustc_name}={value}");
+    }
+    let rustc_version = Command::new(std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into()))
+        .arg("--version")
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map_or_else(|| String::from("unknown"), |value| value.trim().to_owned());
+    println!("cargo:rustc-env=RUSTC_VERSION={rustc_version}");
 
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)

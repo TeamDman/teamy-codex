@@ -1,3 +1,4 @@
+pub mod inventory;
 pub mod list;
 pub mod message;
 mod thread_cli;

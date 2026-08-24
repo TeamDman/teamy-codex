@@ -35,6 +35,10 @@ struct FacetCliOutput<T> {
     value: T,
 }
 
+struct FacetRowsCliOutput<T> {
+    rows: Vec<T>,
+}
+
 impl CliOutput {
     #[must_use]
     pub const fn none() -> Self {
@@ -47,6 +51,14 @@ impl CliOutput {
         T: Facet<'static> + 'static,
     {
         Self(Some(Box::new(FacetCliOutput { value })))
+    }
+
+    #[must_use]
+    pub fn facet_rows<T>(rows: Vec<T>) -> Self
+    where
+        T: Facet<'static> + 'static,
+    {
+        Self(Some(Box::new(FacetRowsCliOutput { rows })))
     }
 
     /// # Errors
@@ -104,6 +116,35 @@ where
     }
 }
 
+impl<T> CliOutputValue for FacetRowsCliOutput<T>
+where
+    T: Facet<'static> + 'static,
+{
+    fn render(&self, format: OutputFormat, stdout_is_terminal: bool) -> eyre::Result<String> {
+        match format {
+            OutputFormat::Text => Ok(PrettyPrinter::new()
+                .with_colors(if stdout_is_terminal {
+                    ColorMode::Always
+                } else {
+                    ColorMode::Never
+                })
+                .format(&self.rows)),
+            OutputFormat::Json => facet_json::to_string_pretty(&self.rows)
+                .wrap_err("failed to serialize command output rows as JSON"),
+            OutputFormat::Csv => {
+                let mut rendered = String::new();
+                for row in &self.rows {
+                    rendered.push_str(
+                        &facet_csv::to_string(row)
+                            .wrap_err("failed to serialize command output row as CSV")?,
+                    );
+                }
+                Ok(rendered)
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -120,6 +161,21 @@ mod tests {
                 name: String::from("example"),
                 count: 3,
             },
+        }
+    }
+
+    fn example_rows_output() -> FacetRowsCliOutput<ExampleReport> {
+        FacetRowsCliOutput {
+            rows: vec![
+                ExampleReport {
+                    name: String::from("first"),
+                    count: 1,
+                },
+                ExampleReport {
+                    name: String::from("second"),
+                    count: 2,
+                },
+            ],
         }
     }
 
@@ -146,5 +202,27 @@ mod tests {
             .render(OutputFormat::Text, false)
             .expect("text rendering should succeed");
         assert!(rendered.contains("example"));
+    }
+
+    #[test]
+    fn renders_flat_rows_as_csv() {
+        let rendered = example_rows_output()
+            .render(OutputFormat::Csv, false)
+            .expect("CSV rows should render");
+        assert_eq!(rendered, "first,1\nsecond,2\n");
+    }
+
+    #[test]
+    fn renders_flat_rows_as_json_and_text() {
+        let json = example_rows_output()
+            .render(OutputFormat::Json, false)
+            .expect("JSON rows should render");
+        let text = example_rows_output()
+            .render(OutputFormat::Text, false)
+            .expect("text rows should render");
+        for rendered in [json, text] {
+            assert!(rendered.contains("first"));
+            assert!(rendered.contains("second"));
+        }
     }
 }

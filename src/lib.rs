@@ -1,8 +1,11 @@
 #![deny(clippy::disallowed_methods)]
 #![deny(clippy::disallowed_macros)]
+#![deny(clippy::disallowed_types)]
 
+mod backup;
 pub mod cli;
 mod codex_state;
+mod inventory;
 pub mod logging_init;
 #[cfg(windows)]
 mod windows_startup;

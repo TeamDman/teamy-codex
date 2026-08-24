@@ -41,6 +41,6 @@ impl ThreadListArgs {
         cancellation_token.bail_if_cancelled()?;
         let codex_home = resolve_codex_home(global_args.codex_home.as_deref())?;
         let threads = list_threads(&codex_home, &self)?;
-        Ok(CliOutput::facet(threads))
+        Ok(CliOutput::facet_rows(threads))
     }
 }
