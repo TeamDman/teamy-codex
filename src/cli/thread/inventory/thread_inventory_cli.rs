@@ -68,6 +68,14 @@ impl ThreadInventoryArgs {
             },
         )?;
         cancellation_token.bail_if_cancelled()?;
-        Ok(CliOutput::facet_rows(rows))
+        // Digest and manifest work: setup plus 20 ms per selected inventory row.
+        let threshold = Some(
+            std::time::Duration::from_secs(3).saturating_add(std::time::Duration::from_millis(
+                u64::try_from(rows.len())
+                    .unwrap_or(u64::MAX)
+                    .saturating_mul(20),
+            )),
+        );
+        Ok(CliOutput::facet_rows(rows, threshold))
     }
 }

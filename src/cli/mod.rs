@@ -1,8 +1,13 @@
+pub mod app_server;
 pub mod backup;
+pub mod chatgpt;
 pub mod global_args;
 pub mod output;
 pub mod thread;
+pub mod usage;
 
+use crate::cli::app_server::AppServerArgs;
+use crate::cli::chatgpt::ChatgptArgs;
 use crate::cli::global_args::GlobalArgs;
 use crate::cli::output::CliOutput;
 use crate::cli::thread::ThreadArgs;
@@ -46,8 +51,11 @@ impl Cli {
 #[derive(Facet, Arbitrary, Debug, PartialEq)]
 #[repr(u8)]
 pub enum Command {
+    AppServer(AppServerArgs),
     Backup(backup::BackupArgs),
+    Chatgpt(ChatgptArgs),
     Thread(ThreadArgs),
+    Usage(usage::UsageArgs),
 }
 
 impl Command {
@@ -61,8 +69,11 @@ impl Command {
     ) -> eyre::Result<CliOutput> {
         cancellation_token.bail_if_cancelled()?;
         match self {
+            Self::AppServer(args) => args.invoke(global_args, cancellation_token).await,
             Self::Backup(args) => args.invoke(global_args, cancellation_token).await,
+            Self::Chatgpt(args) => args.invoke(global_args, cancellation_token).await,
             Self::Thread(args) => args.invoke(global_args, cancellation_token).await,
+            Self::Usage(args) => args.invoke(global_args, cancellation_token).await,
         }
     }
 }

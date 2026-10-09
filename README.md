@@ -1,8 +1,9 @@
 # teamy-codex
 
-`teamy-codex` is a read-only inspection CLI for Codex thread metadata and
-rollout messages. It reads the Codex home directory at runtime; it does not
-vendor, copy, or generate Codex user data in this repository.
+`teamy-codex` inspects Codex thread metadata and rollout messages, supports
+controlled app-server turns, and makes backups. It reads the Codex home
+directory at runtime; it does not vendor or copy Codex user data into this
+repository.
 
 ## Commands
 
@@ -11,6 +12,12 @@ cargo run -- thread list
 cargo run -- thread list --limit 20 --all
 cargo run -- thread inventory --active-since 1week --cwd-under G:\Programming\Repos --manifest .\inventory-manifest.json
 cargo run -- thread message list <thread-id>
+cargo run -- app-server thread list --limit 25
+cargo run -- app-server thread list --limit 25 --cursor <nextCursor>
+cargo run -- app-server thread start --cwd $PWD.Path --prompt 'Describe this repository'
+cargo run -- app-server thread resume <thread-id> --prompt 'Continue the analysis'
+cargo run -- chatgpt transcript from-json <response.json>
+cargo run -- chatgpt transcript from-json <response.json> --conversation-url https://chatgpt.com/c/<conversation-id>
 
 cargo run -- backup dir show
 cargo run -- backup dir set D:\OneDrive\Documents\Backups\codex\teamy-codex
@@ -20,7 +27,37 @@ cargo run -- backup now --jobs 8
 ```
 
 Use `--codex-home` to inspect a deliberately selected Codex state directory.
-The default is `%USERPROFILE%\\.codex`.
+The default is `%USERPROFILE%\\.codex` for the **process that runs this CLI**.
+An isolated sandbox can have a different user profile and Codex state from the
+desktop app. For a desktop-visible task, run in the intended host context or
+explicitly select its Codex home; do not infer visibility from a sandbox-local
+`thread/list` result.
+
+`app-server thread list` launches an owned `codex app-server` child for one
+read-only page and then terminates and reaps it. It includes CLI, VS Code, and
+app-server thread sources and requests state-database-only results, avoiding
+the server's rollout metadata repair scan. The JSON result includes `data` and
+`nextCursor`. Use `--codex-bin` to select a different Codex executable; the
+shared `--codex-home` option is passed to that child as `CODEX_HOME`.
+
+`app-server thread start` creates a persisted Codex thread; `resume` adds a
+turn to one. Both request a read-only sandbox with network access disabled,
+decline approval requests, and return a typed terminal status and bounded
+final message. Starting or resuming still changes Codex thread/session state;
+the read-only setting applies to the turn's sandbox, not that metadata. These
+commands are verified with controlled fake-server tests using synthetic thread
+identifiers. The CLI does not copy or edit the state database directly.
+Cancellation requests `turn/interrupt` once a turn ID is known and waits up to
+two seconds for a terminal event; otherwise it terminates and reaps the child.
+
+`chatgpt transcript from-json` reads one user-supplied local response file
+(maximum 16 MiB) without accessing ChatGPT or browser credentials. It emits
+only user messages and completed final assistant replies, preserving source
+order and each text part. It rejects partial pages, incomplete final replies, and
+selected non-text content rather than silently omitting them. The optional
+`--conversation-url` checks the response ID; it does not fetch the URL. This
+importer targets an observed, undocumented response shape, so a format change
+may require an explicit parser update.
 
 ### Auditable active-task inventory
 
@@ -115,3 +152,7 @@ documented in `docs/thread-inventory-evidence.md`.
 ## See also
 
 https://github.com/0xSero/ai-data-extraction/blob/main/extract_codex.py
+
+## Usage queries
+
+Use `usage history` to query local Codex logs on demand, with thread/time/model filters and grouping. `usage snapshots` reads current native counters; `usage records --input <export.json>` accepts optional explicit exports. See [usage documentation](docs/usage.md) for the SDK, source boundaries and reconciliation.

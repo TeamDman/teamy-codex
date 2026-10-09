@@ -17,12 +17,19 @@ pub enum OutputFormat {
     Csv,
 }
 
-pub struct CliOutput(Option<Box<dyn CliOutputValue>>);
+pub struct CliOutput {
+    value: Option<Box<dyn CliOutputValue>>,
+    pub elapsed_duration_warn_threshold: Option<std::time::Duration>,
+}
 
 impl core::fmt::Debug for CliOutput {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("CliOutput")
-            .field("has_value", &self.0.is_some())
+            .field("has_value", &self.value.is_some())
+            .field(
+                "elapsed_duration_warn_threshold",
+                &self.elapsed_duration_warn_threshold,
+            )
             .finish()
     }
 }
@@ -41,31 +48,43 @@ struct FacetRowsCliOutput<T> {
 
 impl CliOutput {
     #[must_use]
-    pub const fn none() -> Self {
-        Self(None)
+    pub const fn none(elapsed_duration_warn_threshold: Option<std::time::Duration>) -> Self {
+        Self {
+            value: None,
+            elapsed_duration_warn_threshold,
+        }
     }
 
     #[must_use]
-    pub fn facet<T>(value: T) -> Self
+    pub fn facet<T>(value: T, elapsed_duration_warn_threshold: Option<std::time::Duration>) -> Self
     where
         T: Facet<'static> + 'static,
     {
-        Self(Some(Box::new(FacetCliOutput { value })))
+        Self {
+            value: Some(Box::new(FacetCliOutput { value })),
+            elapsed_duration_warn_threshold,
+        }
     }
 
     #[must_use]
-    pub fn facet_rows<T>(rows: Vec<T>) -> Self
+    pub fn facet_rows<T>(
+        rows: Vec<T>,
+        elapsed_duration_warn_threshold: Option<std::time::Duration>,
+    ) -> Self
     where
         T: Facet<'static> + 'static,
     {
-        Self(Some(Box::new(FacetRowsCliOutput { rows })))
+        Self {
+            value: Some(Box::new(FacetRowsCliOutput { rows })),
+            elapsed_duration_warn_threshold,
+        }
     }
 
     /// # Errors
     ///
     /// Returns an error if rendering or writing the selected format fails.
     pub fn emit(self, requested_format: Option<OutputFormat>) -> eyre::Result<()> {
-        let Some(output) = self.0 else {
+        let Some(output) = self.value else {
             return Ok(());
         };
         let stdout_is_terminal = io::stdout().is_terminal();
@@ -86,12 +105,6 @@ impl CliOutput {
         }
         stdout.flush().wrap_err("failed to flush command output")?;
         Ok(())
-    }
-}
-
-impl Default for CliOutput {
-    fn default() -> Self {
-        Self::none()
     }
 }
 
@@ -176,6 +189,20 @@ mod tests {
                     count: 2,
                 },
             ],
+        }
+    }
+
+    #[test]
+    fn budget_metadata_preserves_json_and_csv_rows() {
+        for format in [OutputFormat::Json, OutputFormat::Csv, OutputFormat::Text] {
+            let render = |threshold| {
+                let receipt = CliOutput::facet_rows(example_rows_output().rows, threshold);
+                receipt.value.unwrap().render(format, false).unwrap()
+            };
+            assert_eq!(
+                render(None),
+                render(Some(std::time::Duration::from_secs(1)))
+            );
         }
     }
 

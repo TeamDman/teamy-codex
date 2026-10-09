@@ -25,6 +25,9 @@ impl BackupDirShowArgs {
     ) -> eyre::Result<CliOutput> {
         cancellation_token.bail_if_cancelled()?;
         let source = resolve_codex_home(global_args.codex_home.as_deref())?;
-        Ok(CliOutput::facet(directory_info(&source)?))
+        Ok(CliOutput::facet(
+            directory_info(&source)?,
+            Some(std::time::Duration::from_secs(1)),
+        ))
     }
 }

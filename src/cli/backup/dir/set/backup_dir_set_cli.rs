@@ -32,6 +32,9 @@ impl BackupDirSetArgs {
         cancellation_token.bail_if_cancelled()?;
         set_backup_directory(std::path::Path::new(&self.path))?;
         let source = resolve_codex_home(global_args.codex_home.as_deref())?;
-        Ok(CliOutput::facet(directory_info(&source)?))
+        Ok(CliOutput::facet(
+            directory_info(&source)?,
+            Some(std::time::Duration::from_secs(1)),
+        ))
     }
 }

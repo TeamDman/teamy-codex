@@ -38,6 +38,8 @@ impl BackupNowArgs {
             &cancellation_token,
             self.jobs.unwrap_or_else(crate::backup::default_backup_jobs),
         )?;
-        Ok(CliOutput::facet(report))
+        // Local archival has no byte limit and may traverse arbitrary attachment trees.
+        // Keep its existing copy-rate and ETA tracing separate from completion budgets.
+        Ok(CliOutput::facet(report, None))
     }
 }

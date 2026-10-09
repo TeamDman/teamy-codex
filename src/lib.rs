@@ -3,10 +3,15 @@
 #![deny(clippy::disallowed_types)]
 
 mod backup;
+mod chatgpt_response_json;
 pub mod cli;
+pub mod codex_app_server_process;
+pub mod codex_app_server_stdio;
 mod codex_state;
+pub mod elapsed_duration;
 mod inventory;
 pub mod logging_init;
+pub mod usage;
 #[cfg(windows)]
 mod windows_startup;
 
@@ -82,10 +87,33 @@ pub fn main() -> eyre::Result<()> {
 
     logging_init::init_logging(&cli.global_args, cancellation_token.clone())?;
 
+    let command_name = match &cli.command {
+        cli::Command::AppServer(_) => "app-server",
+        cli::Command::Backup(_) => "backup",
+        cli::Command::Chatgpt(_) => "chatgpt",
+        cli::Command::Thread(_) => "thread",
+        cli::Command::Usage(_) => "usage",
+    };
+    let _command_span = tracing::info_span!("command", command = command_name).entered();
+    tracing::debug!(command = command_name, "Dispatching command");
     let requested_output_format = cli.global_args.output_format;
-    let output = cli.invoke(cancellation_token.clone())?;
-    cancellation_token.bail_if_cancelled()?;
-    output.emit(requested_output_format)?;
-    cancellation_token.bail_if_cancelled()?;
-    Ok(())
+    let started = std::time::Instant::now();
+    let result = (|| {
+        let output = cli.invoke(cancellation_token.clone())?;
+        let threshold = output.elapsed_duration_warn_threshold;
+        let result = (|| {
+            cancellation_token.bail_if_cancelled()?;
+            output.emit(requested_output_format)?;
+            cancellation_token.bail_if_cancelled()?;
+            Ok(())
+        })();
+        elapsed_duration::warn_if_exceeded(command_name, started.elapsed(), threshold);
+        result
+    })();
+    tracing::debug!(
+        command = command_name,
+        success = result.is_ok(),
+        "Command completed"
+    );
+    result
 }

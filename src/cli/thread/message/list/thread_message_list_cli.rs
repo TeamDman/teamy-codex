@@ -33,8 +33,16 @@ impl ThreadMessageListArgs {
         cancellation_token: CancellationToken,
     ) -> eyre::Result<CliOutput> {
         cancellation_token.bail_if_cancelled()?;
+        // Query/rollout read and rendering: setup plus 10 ms per requested row.
+        let threshold = Some(
+            std::time::Duration::from_secs(2).saturating_add(std::time::Duration::from_millis(
+                u64::try_from(self.limit.unwrap_or(50))
+                    .unwrap_or(u64::MAX)
+                    .saturating_mul(10),
+            )),
+        );
         let codex_home = resolve_codex_home(global_args.codex_home.as_deref())?;
         let messages = list_thread_messages(&codex_home, &self)?;
-        Ok(CliOutput::facet_rows(messages))
+        Ok(CliOutput::facet_rows(messages, threshold))
     }
 }
