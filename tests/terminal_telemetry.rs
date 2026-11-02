@@ -3,7 +3,7 @@
 use std::io::Write;
 use teamy_codex::telemetry::terminal_capture::TerminalCapture;
 use teamy_codex::telemetry::terminal_view::{
-    TelemetryCursor, event_summary, print_above, write_event,
+    TelemetryCursor, detail_rows, detail_text, event_summary, print_above, write_event,
 };
 use teamy_tracing::telemetry::{
     Attribute, RecordStore, StoreLimits, TelemetryRecord, TelemetryValue,
@@ -61,6 +61,48 @@ fn cursor_counts_loss_and_does_not_repeat_records() {
     );
     assert!(cursor.take(&store).is_empty());
     assert!(event_summary(&result_record()).contains("output truncated"));
+}
+
+#[test]
+fn selection_uses_stable_sequence_and_marks_evicted_records() {
+    use teamy_codex::telemetry::terminal_navigation::{Navigation, Screen};
+    let mut store = RecordStore::new(StoreLimits {
+        max_records: 2,
+        max_logical_bytes: 8192,
+    });
+    assert!(store.push(result_record()));
+    assert!(store.push(result_record()));
+    let mut navigation = Navigation::default();
+    navigation.initialize_selection(store.stats());
+    assert_eq!(navigation.selected, Some(2));
+    navigation.previous(store.stats());
+    assert_eq!(navigation.selected_index(store.stats()), Some(0));
+    navigation.enter_detail(store.stats());
+    navigation.next(store.stats());
+    assert_eq!(navigation.screen, Screen::Detail { scroll: 1 });
+    assert!(store.push(result_record()));
+    assert_eq!(navigation.selected_index(store.stats()), None);
+    assert!(!navigation.back());
+    navigation.next(store.stats());
+    assert!(navigation.selected_index(store.stats()).is_some());
+    assert!(navigation.back());
+}
+
+#[test]
+fn details_preserve_long_arguments_and_escape_controls() {
+    let mut record = result_record();
+    record.attributes.push(Attribute {
+        key: "output".into(),
+        value: TelemetryValue::String(format!("{}\u{1b}\u{202e}\tend", "x".repeat(10_000))),
+    });
+    let text = detail_text(&record);
+    assert!(text.contains("Get-Date"));
+    assert!(text.contains("output_truncated"));
+    assert!(text.contains("\\u{1b}\\u{202e}"));
+    assert!(!text.contains('\u{1b}'));
+    let rows = detail_rows(&text, 30);
+    assert!(rows.len() > 300);
+    assert!(rows.iter().any(|line| line.contains("\\tend")));
 }
 
 #[test]

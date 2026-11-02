@@ -1,16 +1,20 @@
 # Terminal telemetry receiver
 
 `teamy-codex telemetry` explicitly starts an OTLP/HTTP **protobuf logs** receiver
-on IPv4 loopback and a five-line inline Ratatui view on stderr. It requires an
+on IPv4 loopback and an inline Ratatui view on stderr. It requires an
 interactive stdin and stderr. The address is shown in the view; `--port 0`
 selects an available local port, otherwise the default is 4318. Press `q`,
-Escape or Ctrl+C to stop. The command does not alter Codex configuration,
+Escape at the overview, or Ctrl+C to stop. The command does not alter Codex configuration,
 start Codex or enable telemetry elsewhere.
 
 Received event summaries and ordinary process logs are printed above the view.
 Untrusted control and bidirectional formatting characters are escaped. Lines
-that do not fit the terminal width are clipped with an ellipsis; this is not a
-full command/output viewer. Counts distinguish accepted records, retained
+that do not fit the terminal width are clipped with an ellipsis. Use Up/Down to
+select a retained event and Enter to inspect its escaped arguments, output and
+raw fields; scroll with Up/Down, Page Up/Down, Home or End, and use Escape to
+return. This only shows what the sender delivered, including any upstream
+truncation; it does not execute commands. An evicted selection is identified
+explicitly. Counts distinguish accepted records, retained
 records, evictions, rejections, records missed before display, upstream output
 truncation and evicted process logs. Decisions/results are counted when the
 view processes them, so high-volume loss can make those counts incomplete.
@@ -36,8 +40,8 @@ synthetic data and an isolated temporary configuration for later qualification.
 The synthetic test suite checks loopback delivery and shutdown, scrollback
 insertion with Ratatui's test backend, escaped summaries, explicit loss and
 truncation, process-log acknowledgement, and NDJSON writer failures. A
-synthetic PTY smoke also verified a local event, counter update and `q` exit;
+synthetic PTY smoke also verified a local event, counter update, detail and
+page navigation, return to the overview, and `q` exit;
 terminal hosts, resize behavior and failure recovery still require broader
-qualification. A future reusable terminal foundation should build on the
-terminal foundation roadmap in the adjacent Teamy Docs checkout, not assume
-this application-local capture is already a template capability.
+qualification. The adjacent Teamy Rust CLI checkout contains optional building
+blocks; this command still owns its application-local capture and lifecycle.

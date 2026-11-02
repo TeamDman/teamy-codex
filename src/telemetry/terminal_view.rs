@@ -1,6 +1,7 @@
 //! Terminal-first OTLP overview. Incoming records are not re-emitted as tracing events.
 use crate::telemetry::escape_display;
 use crate::telemetry::terminal_capture::TerminalCapture;
+use crate::telemetry::terminal_navigation::{Navigation, Screen};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use eyre::{Context, ContextCompat, Result, bail};
@@ -87,6 +88,49 @@ fn single_line(input: &str) -> String {
     escape_display(input)
         .replace('\n', " ⏎ ")
         .replace('\t', " ")
+}
+
+/// Preserve the complete record while showing arguments and output as readable text.
+#[must_use]
+pub fn detail_text(record: &TelemetryRecord) -> String {
+    let mut text = String::new();
+    for (key, title) in [("arguments", "Arguments"), ("output", "Output preview")] {
+        if let Some(TelemetryValue::String(value)) = record.attribute(key) {
+            text.push_str(title);
+            text.push_str(":\n");
+            text.push_str(&escape_display(value));
+            text.push_str("\n\n");
+        }
+    }
+    text.push_str("Complete record (including unknown fields):\n");
+    text.push_str(&escape_display(&format!("{record:#?}")));
+    text
+}
+
+/// Wrap without dropping any characters; navigation uses logical rows rather than u16 offsets.
+#[must_use]
+pub fn detail_rows(text: &str, width: u16) -> Vec<String> {
+    let width = usize::from(width.max(1));
+    let text = text.replace('\t', "\\t");
+    let mut rows = Vec::new();
+    let mut line = String::new();
+    let mut used = 0usize;
+    for ch in text.chars() {
+        if ch == '\n' {
+            rows.push(std::mem::take(&mut line));
+            used = 0;
+            continue;
+        }
+        let cells = ch.width().unwrap_or(0);
+        if used > 0 && used.saturating_add(cells) > width {
+            rows.push(std::mem::take(&mut line));
+            used = 0;
+        }
+        line.push(ch);
+        used = used.saturating_add(cells);
+    }
+    rows.push(line);
+    rows
 }
 
 fn clipped_line(input: &str, width: u16) -> String {
@@ -200,7 +244,7 @@ fn run_terminal(
     let terminal = match Terminal::with_options(
         backend,
         TerminalOptions {
-            viewport: Viewport::Inline(5),
+            viewport: Viewport::Inline(12),
         },
     ) {
         Ok(terminal) => terminal,
@@ -212,13 +256,36 @@ fn run_terminal(
     let mut terminal = InlineGuard { terminal };
     let capture = TerminalCapture::current().context("terminal log capture not installed")?;
     let mut cursor = TelemetryCursor::default();
+    let mut navigation = Navigation::default();
+    let mut details_cache: Option<(u64, u16, Vec<String>)> = None;
     loop {
-        let (records, stats) = {
+        let width = terminal.terminal.size()?.width;
+        let (records, stats, selected_summary, selected_record) = {
             let store = store
                 .lock()
                 .map_err(|_poisoned| eyre::eyre!("telemetry store poisoned"))?;
-            (cursor.take(&store), store.stats())
+            let records = cursor.take(&store);
+            let stats = store.stats();
+            navigation.initialize_selection(stats);
+            let selected = navigation
+                .selected_index(stats)
+                .and_then(|index| store.iter().nth(index));
+            let summary = selected.map(event_summary);
+            let needs_detail = matches!(navigation.screen, Screen::Detail { .. })
+                && selected.is_some()
+                && details_cache.as_ref().is_none_or(|(id, old_width, _)| {
+                    Some(*id) != navigation.selected || *old_width != width
+                });
+            (
+                records,
+                stats,
+                summary,
+                needs_detail.then(|| selected.cloned()).flatten(),
+            )
         };
+        if let (Some(id), Some(record)) = (navigation.selected, selected_record) {
+            details_cache = Some((id, width, detail_rows(&detail_text(&record), width)));
+        }
         for record in &records {
             if let Some(file) = file.as_mut() {
                 write_event(file, record)?;
@@ -237,23 +304,102 @@ fn run_terminal(
             capture.acknowledge(*id)?;
         }
         terminal.terminal.draw(|frame| {
-            let text = overview(address, stats, &cursor, dropped_logs);
+            let text = view_text(
+                &navigation,
+                stats,
+                details_cache.as_ref(),
+                &overview(address, stats, &cursor, dropped_logs),
+                selected_summary.as_deref(),
+                frame.area().height,
+            );
             frame.render_widget(Paragraph::new(text), frame.area());
         })?;
+        if let Screen::Detail { scroll } = &mut navigation.screen
+            && let Some((_, _, rows)) = &details_cache
+        {
+            *scroll = (*scroll).min(rows.len().saturating_sub(1));
+        }
         if cancellation.bail_if_cancelled().is_err() {
             break;
         }
         if event::poll(Duration::from_millis(100))?
             && let Event::Key(key) = event::read()?
             && key.kind == KeyEventKind::Press
-            && (matches!(key.code, KeyCode::Char('q') | KeyCode::Esc)
-                || (key.code == KeyCode::Char('c')
-                    && key.modifiers.contains(KeyModifiers::CONTROL)))
+            && handle_key(&mut navigation, stats, key)
         {
             break;
         }
     }
     Ok(cursor)
+}
+
+fn view_text(
+    navigation: &Navigation,
+    stats: StoreStats,
+    cache: Option<&(u64, u16, Vec<String>)>,
+    overview: &str,
+    summary: Option<&str>,
+    height: u16,
+) -> String {
+    match navigation.screen {
+        Screen::Overview => format!(
+            "{}\nSelected: {}\nUp/Down select · Enter inspect",
+            overview,
+            summary.unwrap_or("none or evicted")
+        ),
+        Screen::Detail { scroll } => match (navigation.selected_index(stats), cache) {
+            (Some(_), Some((id, _, rows))) if Some(*id) == navigation.selected => {
+                let start = scroll.min(rows.len().saturating_sub(1));
+                let height = usize::from(height.saturating_sub(2));
+                format!(
+                    "Event {} · row {}/{} · arrows/PgUp/PgDn · Esc back\n{}",
+                    id,
+                    start + 1,
+                    rows.len(),
+                    rows.iter()
+                        .skip(start)
+                        .take(height)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                )
+            }
+            _ => "Selected event was evicted. Press Esc to return.".into(),
+        },
+    }
+}
+
+fn handle_key(navigation: &mut Navigation, stats: StoreStats, key: event::KeyEvent) -> bool {
+    match key.code {
+        KeyCode::Char('q') => return true,
+        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return true,
+        KeyCode::Esc if navigation.back() => return true,
+        KeyCode::Up => navigation.previous(stats),
+        KeyCode::Down => navigation.next(stats),
+        KeyCode::PageUp => {
+            for _ in 0..10 {
+                navigation.previous(stats);
+            }
+        }
+        KeyCode::PageDown => {
+            for _ in 0..10 {
+                navigation.next(stats);
+            }
+        }
+        KeyCode::Home => {
+            if let Screen::Detail { scroll } = &mut navigation.screen {
+                *scroll = 0;
+            }
+        }
+        KeyCode::End => {
+            if let Screen::Detail { scroll } = &mut navigation.screen {
+                *scroll = usize::MAX;
+            }
+        }
+        KeyCode::Enter => navigation.enter_detail(stats),
+        _ => {}
+    }
+    false
 }
 
 fn overview(

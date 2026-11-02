@@ -5,6 +5,8 @@ mod event;
 #[cfg(feature = "telemetry")]
 pub mod terminal_capture;
 #[cfg(feature = "telemetry")]
+pub mod terminal_navigation;
+#[cfg(feature = "telemetry")]
 pub mod terminal_view;
 mod tool_details;
 
