@@ -43,5 +43,9 @@ truncation, process-log acknowledgement, and NDJSON writer failures. A
 synthetic PTY smoke also verified a local event, counter update, detail and
 page navigation, return to the overview, and `q` exit;
 terminal hosts, resize behavior and failure recovery still require broader
-qualification. The adjacent Teamy Rust CLI checkout contains optional building
-blocks; this command still owns its application-local capture and lifecycle.
+qualification. Inline ownership and escaped scrollback are copied from Teamy
+Rust CLI commit `9cbff90`, following the template-copy workflow. The process-log
+capture and telemetry-specific screen/navigation remain local deviations; the
+application owns the subscriber, sink and receiver lifecycle. The copied guard
+rejects a second in-process owner and refuses reuse after a screen restoration
+failure; it cannot coordinate external processes or unrelated terminal writers.

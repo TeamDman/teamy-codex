@@ -1,13 +1,12 @@
 //! Terminal-first OTLP overview. Incoming records are not re-emitted as tracing events.
 use crate::telemetry::escape_display;
 use crate::telemetry::terminal_capture::TerminalCapture;
+use crate::telemetry::terminal_foundation::InlineTerminal;
+pub use crate::telemetry::terminal_foundation::print_above;
 use crate::telemetry::terminal_navigation::{Navigation, Screen};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use eyre::{Context, ContextCompat, Result, bail};
-use ratatui::backend::{Backend, CrosstermBackend};
-use ratatui::widgets::{Paragraph, Widget};
-use ratatui::{Terminal, TerminalOptions, Viewport};
+use ratatui::widgets::Paragraph;
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, IsTerminal, Write};
 use std::sync::{Arc, Mutex};
@@ -133,53 +132,6 @@ pub fn detail_rows(text: &str, width: u16) -> Vec<String> {
     rows
 }
 
-fn clipped_line(input: &str, width: u16) -> String {
-    let line = single_line(input);
-    let mut result = String::new();
-    let mut used = 0usize;
-    let width = usize::from(width);
-    for ch in line.chars() {
-        let size = ch.width().unwrap_or(0);
-        if used.saturating_add(size) >= width {
-            if width > 0 {
-                result.push('…');
-            }
-            return result;
-        }
-        used += size;
-        result.push(ch);
-    }
-    result
-}
-
-/// Print a line into scrollback immediately above the inline viewport.
-///
-/// # Errors
-/// Returns a backend error if the terminal cannot insert the line.
-pub fn print_above<B: Backend>(
-    terminal: &mut Terminal<B>,
-    line: &str,
-) -> std::result::Result<(), B::Error> {
-    let width = terminal.size()?.width;
-    let line = clipped_line(line, width);
-    terminal.insert_before(1, |buffer| Paragraph::new(line).render(buffer.area, buffer))
-}
-
-struct InlineGuard<B: Backend> {
-    terminal: Terminal<B>,
-}
-
-impl<B: Backend> Drop for InlineGuard<B> {
-    fn drop(&mut self) {
-        let origin = self.terminal.get_frame().area().as_position();
-        let _ = self.terminal.clear();
-        let _ = self.terminal.set_cursor_position(origin);
-        let _ = self.terminal.show_cursor();
-        let _ = self.terminal.backend_mut().flush();
-        let _ = disable_raw_mode();
-    }
-}
-
 /// Start a loopback collector only as part of this explicit command.
 ///
 /// # Errors
@@ -239,27 +191,15 @@ fn run_terminal(
     mut file: Option<&mut BufWriter<File>>,
     cancellation: &CancellationToken,
 ) -> Result<TelemetryCursor> {
-    enable_raw_mode().wrap_err("enable terminal raw mode")?;
-    let backend = CrosstermBackend::new(BufWriter::new(std::io::stderr()));
-    let terminal = match Terminal::with_options(
-        backend,
-        TerminalOptions {
-            viewport: Viewport::Inline(12),
-        },
-    ) {
-        Ok(terminal) => terminal,
-        Err(error) => {
-            let _ = disable_raw_mode();
-            return Err(error.into());
-        }
-    };
-    let mut terminal = InlineGuard { terminal };
+    let mut guard = InlineTerminal::open(BufWriter::new(std::io::stderr()), 12)
+        .wrap_err("open inline terminal")?;
+    let terminal = guard.terminal_mut().context("inline terminal is closed")?;
     let capture = TerminalCapture::current().context("terminal log capture not installed")?;
     let mut cursor = TelemetryCursor::default();
     let mut navigation = Navigation::default();
     let mut details_cache: Option<(u64, u16, Vec<String>)> = None;
     loop {
-        let width = terminal.terminal.size()?.width;
+        let width = terminal.size()?.width;
         let (records, stats, selected_summary, selected_record) = {
             let store = store
                 .lock()
@@ -290,8 +230,7 @@ fn run_terminal(
             if let Some(file) = file.as_mut() {
                 write_event(file, record)?;
             }
-            print_above(&mut terminal.terminal, &event_summary(record))
-                .wrap_err("display telemetry")?;
+            print_above(terminal, &event_summary(record)).wrap_err("display telemetry")?;
         }
         if !records.is_empty()
             && let Some(file) = file.as_mut()
@@ -300,10 +239,10 @@ fn run_terminal(
         }
         let (pending, dropped_logs) = capture.snapshot_limit(16)?;
         for (id, line) in &pending {
-            print_above(&mut terminal.terminal, line).wrap_err("display process log")?;
+            print_above(terminal, line).wrap_err("display process log")?;
             capture.acknowledge(*id)?;
         }
-        terminal.terminal.draw(|frame| {
+        terminal.draw(|frame| {
             let text = view_text(
                 &navigation,
                 stats,
@@ -330,6 +269,7 @@ fn run_terminal(
             break;
         }
     }
+    guard.close().wrap_err("restore inline terminal")?;
     Ok(cursor)
 }
 
