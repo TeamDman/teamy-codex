@@ -20,6 +20,16 @@ impl Write for Broken {
     }
 }
 
+struct FlushBroken;
+impl Write for FlushBroken {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Err(std::io::Error::other("synthetic flush failure"))
+    }
+}
+
 fn result_record() -> TelemetryRecord {
     TelemetryRecord {
         event_name: "codex.tool_result".into(),
@@ -120,6 +130,37 @@ fn process_logs_are_acknowledged_only_after_delivery() {
     let mut tail = Vec::new();
     capture.finish(&mut tail).unwrap();
     assert_eq!(tail, b"second");
+}
+
+#[test]
+fn replay_retains_record_if_flush_fails() {
+    let capture = TerminalCapture::default();
+    write!(capture.make_writer(), "pending").unwrap();
+    capture.finish(FlushBroken).unwrap_err();
+    assert_eq!(capture.snapshot().unwrap().0.len(), 1);
+    let mut output = Vec::new();
+    capture.finish(&mut output).unwrap();
+    assert_eq!(output, b"pending");
+}
+
+#[test]
+fn hidden_console_retains_logs_until_visible() {
+    use teamy_codex::telemetry::terminal_view::{TerminalState, process_log_batch_limit};
+    let capture = TerminalCapture::default();
+    write!(capture.make_writer(), "while hidden").unwrap();
+    assert!(
+        capture
+            .snapshot_limit(process_log_batch_limit(TerminalState::Hidden))
+            .unwrap()
+            .0
+            .is_empty()
+    );
+    let (pending, _) = capture
+        .snapshot_limit(process_log_batch_limit(TerminalState::Visible))
+        .unwrap();
+    assert_eq!(pending[0].1, "while hidden");
+    capture.acknowledge(pending[0].0).unwrap();
+    assert!(capture.snapshot().unwrap().0.is_empty());
 }
 
 #[test]

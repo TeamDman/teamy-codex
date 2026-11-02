@@ -49,3 +49,8 @@ capture and telemetry-specific screen/navigation remain local deviations; the
 application owns the subscriber, sink and receiver lifecycle. The copied guard
 rejects a second in-process owner and refuses reuse after a screen restoration
 failure; it cannot coordinate external processes or unrelated terminal writers.
+
+An optional, explicitly launched Windows tray executable is described in
+[Windows tray telemetry](windows-tray-telemetry.md). It has not been activated
+or visually qualified. The normal `telemetry` command does not start it or
+change a shared terminal's visibility.

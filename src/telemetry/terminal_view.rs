@@ -24,6 +24,37 @@ pub struct TelemetryCursor {
     pub results: u64,
 }
 
+/// The optional host controls visibility and may request a clean exit.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TerminalState {
+    Visible,
+    Hidden,
+    Exit,
+}
+
+/// Preserve bounded process logs while the owned console is hidden.
+#[must_use]
+pub fn process_log_batch_limit(state: TerminalState) -> usize {
+    if state == TerminalState::Visible {
+        16
+    } else {
+        0
+    }
+}
+
+pub trait TerminalControl {
+    /// # Errors
+    /// Returns an error if the host cannot deliver or apply its control events.
+    fn poll(&mut self) -> Result<TerminalState>;
+}
+
+struct AlwaysVisible;
+impl TerminalControl for AlwaysVisible {
+    fn poll(&mut self) -> Result<TerminalState> {
+        Ok(TerminalState::Visible)
+    }
+}
+
 impl TelemetryCursor {
     /// Read only records not already processed, accounting for evicted records.
     pub fn take(&mut self, store: &RecordStore) -> Vec<TelemetryRecord> {
@@ -141,6 +172,18 @@ pub async fn run(
     events_file: Option<&str>,
     cancellation: CancellationToken,
 ) -> Result<()> {
+    run_controlled(port, events_file, cancellation, &mut AlwaysVisible).await
+}
+
+/// Run the receiver while an optional host controls its owned terminal.
+/// # Errors
+/// Returns an error for terminal, host, bind, file, output or shutdown failures.
+pub async fn run_controlled(
+    port: u16,
+    events_file: Option<&str>,
+    cancellation: CancellationToken,
+    control: &mut dyn TerminalControl,
+) -> Result<()> {
     if !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() {
         bail!("telemetry requires interactive stdin and stderr");
     }
@@ -154,7 +197,7 @@ pub async fn run(
         .await
         .wrap_err("bind OTLP receiver")?;
     let address = receiver.address();
-    let result = run_terminal(address, &store, file.as_mut(), &cancellation);
+    let result = run_terminal(address, &store, file.as_mut(), &cancellation, control);
     let shutdown = tokio::time::timeout(Duration::from_secs(15), receiver.shutdown())
         .await
         .wrap_err("OTLP receiver shutdown timed out")
@@ -190,6 +233,7 @@ fn run_terminal(
     store: &Arc<Mutex<RecordStore>>,
     mut file: Option<&mut BufWriter<File>>,
     cancellation: &CancellationToken,
+    control: &mut dyn TerminalControl,
 ) -> Result<TelemetryCursor> {
     let mut guard = InlineTerminal::open(BufWriter::new(std::io::stderr()), 12)
         .wrap_err("open inline terminal")?;
@@ -199,6 +243,10 @@ fn run_terminal(
     let mut navigation = Navigation::default();
     let mut details_cache: Option<(u64, u16, Vec<String>)> = None;
     loop {
+        let visibility = control.poll()?;
+        if visibility == TerminalState::Exit {
+            break;
+        }
         let width = terminal.size()?.width;
         let (records, stats, selected_summary, selected_record) = {
             let store = store
@@ -237,7 +285,8 @@ fn run_terminal(
         {
             file.flush().wrap_err("flush telemetry events file")?;
         }
-        let (pending, dropped_logs) = capture.snapshot_limit(16)?;
+        let (pending, dropped_logs) =
+            capture.snapshot_limit(process_log_batch_limit(visibility))?;
         for (id, line) in &pending {
             print_above(terminal, line).wrap_err("display process log")?;
             capture.acknowledge(*id)?;

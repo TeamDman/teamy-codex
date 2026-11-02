@@ -11,6 +11,10 @@ pub mod terminal_navigation;
 #[cfg(feature = "telemetry")]
 pub mod terminal_view;
 mod tool_details;
+#[cfg(all(windows, feature = "windows-tray"))]
+pub mod tray_app;
+#[cfg(all(windows, feature = "windows-tray"))]
+pub mod windows_foundation;
 
 pub use correlate::{Correlation, ToolCallRow, correlate};
 pub use detail::{CommandDetail, ShellKind, command_detail, escape_display};

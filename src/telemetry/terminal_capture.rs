@@ -86,6 +86,7 @@ impl TerminalCapture {
         state.active = false;
         while let Some((_, record)) = state.records.front() {
             writer.write_all(record.as_bytes())?;
+            writer.flush()?;
             state.records.pop_front();
         }
         writer.flush()

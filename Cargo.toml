@@ -1,5 +1,6 @@
 [package]
 name = "teamy-codex"
+default-run = "teamy-codex"
 version = "0.1.0"
 edition = "2024"
 authors = ["TeamDman"]
@@ -55,8 +56,14 @@ windows = { version = "0.62.2", features = [
 [features]
 default = ["telemetry"]
 telemetry = ["dep:teamy-tracing", "dep:owned-facet-json", "dep:ratatui"]
+windows-tray = ["telemetry", "windows/Win32_Foundation", "windows/Win32_Graphics_Gdi", "windows/Win32_Security", "windows/Win32_System_LibraryLoader", "windows/Win32_System_Threading", "windows/Win32_UI_Shell", "windows/Win32_UI_WindowsAndMessaging"]
 extended_observability = []
 tracy = ["extended_observability", "dep:tracing-tracy"]
+
+[[bin]]
+name = "teamy-codex-tray"
+path = "src/bin/teamy_codex_tray.rs"
+required-features = ["windows-tray"]
 
 [build-dependencies]
 embed-resource = "3.0.6"
