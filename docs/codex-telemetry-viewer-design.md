@@ -27,6 +27,30 @@ Names are provisional. Keep the existing default formatter graph intact and plac
 - Optional `egui` widgets accept a store/query interface and UI state; they neither start a server nor create an eframe app. File and console consumers operate on the shared model with caller-supplied writers and independent failure/retention policies. The existing `FacetJson` layer and `SharedWriter` retain their present contracts.
 - Teamy Codex owns a `CodexToolCall` adapter and eframe application, correlating source/session/call identifiers, preserving raw fields and showing partial results. No exact signature or feature name above is a stable API commitment.
 
+## Local presentation model and remaining integration
+
+The local `telemetry` module supplies a separate Facet-backed `CodexEvent` model,
+typed unknown fields, correlation rows and an `exec_command` detail extractor.
+It does not receive records or start an application. Correlation pairs exactly
+one decision and one result for the same session/call and matching source;
+missing source is explicitly marked uncertain, duplicates remain ambiguous,
+and missing IDs or unrelated event types remain visible as separate rows.
+Argument JSON is interpreted only for the `exec_command` tool. An omitted shell
+is unknown, not automatically PowerShell. The raw argument string and unknown
+fields remain available, and the truncation flag is optional. The display escape
+helper does not execute commands. Synthetic tests exercise these distinctions.
+
+The telemetry-enabled `teamy-tracing` commits are local only. Published version
+0.2.0 is the older formatter, so it cannot supply the new model, receiver or
+widget. A future integration needs a version containing those features or an
+approved shared Git source containing the commits; a permanent machine-specific
+path override is not a portable solution. The two libraries currently use
+different Facet identities. Convert between their explicit data types at the
+adapter boundary rather than assuming the Facet traits are interchangeable;
+the presentation model alone does not require a consumer-wide Facet migration.
+The eframe shell, mapping from received records, replay and lifecycle work remain
+unimplemented. No real Codex data is accessed by these model tests.
+
 ## Proposed boundaries
 
 1. **Typed records and storage:** add a reusable versioned Facet-backed event envelope, independent of network and UI. Preserve OTLP resource, scope and record attributes, their types, source/observed timestamps, trace/span IDs and unknown fields. Distinguish missing, invalid and explicitly truncated data. Preserve timing units, producer identity and sequence where supplied; never invent a complete ancestry or start time. Provide a bounded byte and record budget, explicit eviction/drop counters and a query interface that does not clone all history each frame. Reuse the Teamy Docs contract, with a documented mapping for values that cannot round-trip. Avoid first-party Serde APIs per TeamyStyle.
@@ -48,3 +72,21 @@ Telemetry may contain commands, output, paths, secrets and personal information 
 5. With specific approval for a controlled temporary configuration and synthetic-only live input, qualify the installed Codex version against the listener: actual fields, PowerShell fidelity, disabled/enabled console output, unavailable/restarted receiver, delivery/drop behavior and clean shutdown. Record version, results and cleanup. An offline capture or export failure must not be silently represented as complete. Changing the user's live Codex settings or capturing actual conversations requires separate specific confirmation.
 
 Open choices include OTLP dependency and initial encoding, exact buffer and retention defaults, durable storage format, redaction policy, feature versus separate crate, dependency graph alignment, and the installed-version validation method. Resolve these with a small synthetic prototype and dependency review before committing to a public API.
+
+For a future specifically approved live qualification, first make the new
+tracing revision available from an approved portable source, integrate the
+receiver and viewer, and confirm the actual sender and endpoint settings. Use a
+temporary isolated Codex configuration and a synthetic-only command such as
+`Write-Output 'synthetic test'`; do not reuse a real conversation. Obtain
+approval for any authentication or network access separately. The collector
+could receive tool arguments, command output previews, call/session IDs, model
+and resource metadata, and other enabled log events. Prompt text is a separate
+setting, but tool arguments or output can themselves contain sensitive data.
+The current receiver holds records in process memory only, by default up to
+1,000 records and 8 MiB of logical record size; it has no file retention or
+automatic redaction, and clearing is not secure memory erasure. Confirm those
+limits and any changed configuration before starting. Exercise absent, started
+and stopped receiver states and the truncation indicator, then shut down the
+listener and remove the temporary test configuration under the approved test
+procedure. Do not apply this plan to the user's live configuration without
+specific confirmation.

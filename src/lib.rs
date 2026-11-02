@@ -11,6 +11,7 @@ mod codex_state;
 pub mod elapsed_duration;
 mod inventory;
 pub mod logging_init;
+pub mod telemetry;
 pub mod usage;
 #[cfg(windows)]
 mod windows_startup;
