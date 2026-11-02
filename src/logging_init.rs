@@ -65,14 +65,55 @@ pub fn init_logging(
     global_args: &GlobalArgs,
     cancellation_token: CancellationToken,
 ) -> eyre::Result<()> {
+    #[cfg(feature = "telemetry")]
+    return init_logging_with_capture(global_args, cancellation_token, None);
+    #[cfg(not(feature = "telemetry"))]
+    init_logging_inner(
+        global_args,
+        cancellation_token,
+        BoxMakeWriter::new(std::io::stderr),
+        true,
+    )
+}
+
+#[cfg(feature = "telemetry")]
+/// Initialize ordinary logging with an optional inline-terminal human sink.
+///
+/// # Errors
+/// Returns an error when a requested log file cannot be created or a filter is invalid.
+pub fn init_logging_with_capture(
+    global_args: &GlobalArgs,
+    cancellation_token: CancellationToken,
+    capture: Option<crate::telemetry::terminal_capture::TerminalCapture>,
+) -> eyre::Result<()> {
+    let ansi = capture.is_none();
+    let writer = match capture {
+        Some(capture) => BoxMakeWriter::new(capture),
+        None => BoxMakeWriter::new(std::io::stderr),
+    };
+    init_logging_inner(global_args, cancellation_token, writer, ansi)
+}
+
+fn init_logging_inner(
+    global_args: &GlobalArgs,
+    cancellation_token: CancellationToken,
+    human_writer: BoxMakeWriter,
+    ansi: bool,
+) -> eyre::Result<()> {
     let subscriber = Registry::default();
     let stderr_layer = tracing_subscriber::fmt::layer()
         .with_file(cfg!(debug_assertions))
         .with_line_number(cfg!(debug_assertions))
         .with_target(true)
-        .with_writer(std::io::stderr)
+        .with_writer(human_writer)
         .pretty()
-        .without_time()
+        .without_time();
+    let stderr_layer = if ansi {
+        stderr_layer
+    } else {
+        stderr_layer.with_ansi(false)
+    };
+    let stderr_layer = stderr_layer
         .with_filter(default_log_filter(global_args)?.and(filter_fn(exclude_tracy_frame_mark)));
     let subscriber = subscriber.with(stderr_layer);
     let subscriber = subscriber.with(

@@ -3,6 +3,8 @@ pub mod backup;
 pub mod chatgpt;
 pub mod global_args;
 pub mod output;
+#[cfg(feature = "telemetry")]
+pub mod telemetry;
 pub mod thread;
 pub mod usage;
 
@@ -56,6 +58,8 @@ pub enum Command {
     Chatgpt(ChatgptArgs),
     Thread(ThreadArgs),
     Usage(usage::UsageArgs),
+    #[cfg(feature = "telemetry")]
+    Telemetry(telemetry::TelemetryArgs),
 }
 
 impl Command {
@@ -74,6 +78,8 @@ impl Command {
             Self::Chatgpt(args) => args.invoke(global_args, cancellation_token).await,
             Self::Thread(args) => args.invoke(global_args, cancellation_token).await,
             Self::Usage(args) => args.invoke(global_args, cancellation_token).await,
+            #[cfg(feature = "telemetry")]
+            Self::Telemetry(args) => args.invoke(cancellation_token).await,
         }
     }
 }

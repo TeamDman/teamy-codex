@@ -17,6 +17,8 @@ path = "src/lib.rs"
 [dependencies]
 arbitrary = { version = "1.4.1", features = ["derive"] }
 chrono = "0.4"
+crossterm = "0.29"
+unicode-width = "0.2"
 color-eyre = "0.6.5"
 dirs = "6.0.0"
 eyre = "0.6.12"
@@ -39,6 +41,9 @@ tracing-subscriber = { version = "0.3.19", default-features = false, features = 
 ] }
 tracing-tracy = { version = "0.11", optional = true, default-features = false, features = ["enable", "system-tracing", "context-switch-tracing", "sampling", "code-transfer", "callstack-inlines", "only-localhost"] }
 teamy-cancellation = { git = "https://github.com/TeamDman/teamy-cancellation.git", rev = "7c77848", features = ["figue", "arbitrary"] }
+teamy-tracing = { git = "https://github.com/TeamDman/teamy-tracing.git", rev = "207658ceacef0a756bec704a05d6cc1db3536f20", features = ["otlp-http"], optional = true }
+owned-facet-json = { package = "teamy-facet-json", version = "=0.50.0-rc.9", default-features = false, optional = true }
+ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"], optional = true }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62.2", features = [
@@ -48,7 +53,8 @@ windows = { version = "0.62.2", features = [
 ] }
 
 [features]
-default = []
+default = ["telemetry"]
+telemetry = ["dep:teamy-tracing", "dep:owned-facet-json", "dep:ratatui"]
 extended_observability = []
 tracy = ["extended_observability", "dep:tracing-tracy"]
 

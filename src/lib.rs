@@ -86,6 +86,16 @@ pub fn main() -> eyre::Result<()> {
         .stop_after
         .start_stop_after_duration_thread(cancellation_token.clone())?;
 
+    #[cfg(feature = "telemetry")]
+    let terminal_capture = matches!(&cli.command, cli::Command::Telemetry(_))
+        .then(telemetry::terminal_capture::TerminalCapture::install);
+    #[cfg(feature = "telemetry")]
+    logging_init::init_logging_with_capture(
+        &cli.global_args,
+        cancellation_token.clone(),
+        terminal_capture.clone(),
+    )?;
+    #[cfg(not(feature = "telemetry"))]
     logging_init::init_logging(&cli.global_args, cancellation_token.clone())?;
 
     let command_name = match &cli.command {
@@ -94,6 +104,8 @@ pub fn main() -> eyre::Result<()> {
         cli::Command::Chatgpt(_) => "chatgpt",
         cli::Command::Thread(_) => "thread",
         cli::Command::Usage(_) => "usage",
+        #[cfg(feature = "telemetry")]
+        cli::Command::Telemetry(_) => "telemetry",
     };
     let _command_span = tracing::info_span!("command", command = command_name).entered();
     tracing::debug!(command = command_name, "Dispatching command");
@@ -111,6 +123,10 @@ pub fn main() -> eyre::Result<()> {
         elapsed_duration::warn_if_exceeded(command_name, started.elapsed(), threshold);
         result
     })();
+    #[cfg(feature = "telemetry")]
+    if let Some(capture) = terminal_capture {
+        capture.finish(std::io::stderr())?;
+    }
     tracing::debug!(
         command = command_name,
         success = result.is_ok(),

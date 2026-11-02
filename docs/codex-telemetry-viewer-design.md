@@ -1,6 +1,6 @@
 # Codex telemetry viewer: investigation and implementation plan
 
-Status: initial reusable implementation, 2 November 2026. The adjacent `teamy-tracing` checkout has a synthetic-tested, bounded record store, protobuf adapter, explicit loopback HTTP receiver and generic egui widget at local commit `9fb1cd3`; see its `docs/telemetry.md` for exact limits and missing features. Local commit `207658c` adds a build-checked synthetic eframe example that does not start a listener. It has not been visually qualified. There is not yet a Teamy Codex viewer, live capture or configuration change. Synthetic examples and tests must use invented commands and outputs. This work builds on the egui guide in the adjacent Teamy Docs checkout and its [proposed typed telemetry contract](https://github.com/TeamDman/teamy-docs/blob/b34b31de729973dca3aeb9d95627403599e7a69a/src/logging.md#preserve-field-types-before-crossing-ipc).
+Status: terminal-first implementation, 2 November 2026. `teamy-tracing` commits `9fb1cd3` and `207658c` are available on its implementation branch. Teamy Codex now pins `207658c` and has a synthetic-tested [inline terminal receiver](terminal-telemetry.md); no live capture or Codex configuration change has occurred. The eframe example is not the Codex application and has not been visually qualified. Synthetic examples and tests must use invented commands and outputs. This work builds on the egui guide in the adjacent Teamy Docs checkout and its [proposed typed telemetry contract](https://github.com/TeamDman/teamy-docs/blob/b34b31de729973dca3aeb9d95627403599e7a69a/src/logging.md#preserve-field-types-before-crossing-ipc).
 
 ## Evidence and limits
 
@@ -40,16 +40,16 @@ is unknown, not automatically PowerShell. The raw argument string and unknown
 fields remain available, and the truncation flag is optional. The display escape
 helper does not execute commands. Synthetic tests exercise these distinctions.
 
-The telemetry-enabled `teamy-tracing` commits are local only. Published version
-0.2.0 is the older formatter, so it cannot supply the new model, receiver or
-widget. A future integration needs a version containing those features or an
-approved shared Git source containing the commits; a permanent machine-specific
-path override is not a portable solution. The two libraries currently use
+The telemetry-enabled `teamy-tracing` commits are pinned from its pushed Git
+branch; published version 0.2.0 is the older formatter and does not contain
+them. The two libraries currently use
 different Facet identities. Convert between their explicit data types at the
 adapter boundary rather than assuming the Facet traits are interchangeable;
 the presentation model alone does not require a consumer-wide Facet migration.
-The eframe shell, mapping from received records, replay and lifecycle work remain
-unimplemented. No real Codex data is accessed by these model tests.
+The terminal command uses the owned-registry Facet JSON identity for its optional
+event file. The Codex-specific event mapping, rich PowerShell view, reusable
+terminal extraction and eframe shell remain unimplemented. No real Codex data
+is accessed by these model tests.
 
 ## Proposed boundaries
 
