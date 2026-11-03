@@ -116,6 +116,135 @@ fn details_preserve_long_arguments_and_escape_controls() {
 }
 
 #[test]
+fn powershell_preview_preserves_raw_data_and_does_not_guess_an_implicit_shell() {
+    use teamy_codex::telemetry::{FieldValue, ShellKind, command_detail, from_telemetry_record};
+    let mut record = result_record();
+    record.resource_attributes.push(Attribute {
+        key: "service.instance.id".into(),
+        value: TelemetryValue::String("producer".into()),
+    });
+    record.attributes.extend([
+        Attribute {
+            key: "conversation.id".into(),
+            value: TelemetryValue::String("session".into()),
+        },
+        Attribute {
+            key: "call_id".into(),
+            value: TelemetryValue::String("call".into()),
+        },
+        Attribute {
+            key: "unknown".into(),
+            value: TelemetryValue::Array(vec![
+                TelemetryValue::Integer(42),
+                TelemetryValue::Bytes(vec![1, 2]),
+            ]),
+        },
+        Attribute {
+            key: "output".into(),
+            value: TelemetryValue::String("synthetic\u{1b}[31m".into()),
+        },
+    ]);
+    let event = from_telemetry_record(&record);
+    assert_eq!(
+        (
+            event.source.as_deref(),
+            event.session.as_deref(),
+            event.call_id.as_deref()
+        ),
+        (Some("producer"), Some("session"), Some("call"))
+    );
+    assert_eq!(
+        event.field("unknown"),
+        Some(&FieldValue::Array(vec![
+            FieldValue::Integer(42),
+            FieldValue::Bytes(vec![1, 2])
+        ]))
+    );
+    assert!(matches!(
+        command_detail(&event).shell,
+        ShellKind::PowerShell(_)
+    ));
+    let text = detail_text(&record);
+    assert!(text.contains("Command:\nGet-Date"));
+    assert!(text.contains("Shell: PowerShell (powershell)"));
+    assert!(text.contains("Sender reports output was truncated"));
+    assert!(text.contains("synthetic\\u{1b}[31m"));
+    assert!(text.contains("Complete record (including unknown fields)"));
+    assert!(!text.contains('\u{1b}'));
+    record
+        .attributes
+        .iter_mut()
+        .find(|item| item.key == "arguments")
+        .unwrap()
+        .value = TelemetryValue::String(r#"{"cmd":"Write-Output 1"}"#.into());
+    assert!(detail_text(&record).contains("Shell: unknown or implicit"));
+    record
+        .attributes
+        .iter_mut()
+        .find(|item| item.key == "arguments")
+        .unwrap()
+        .value = TelemetryValue::String("not json".into());
+    let malformed = detail_text(&record);
+    assert!(malformed.contains("Arguments:\nnot json"));
+    assert!(!malformed.contains("Command:\n"));
+}
+
+#[test]
+fn string_truncation_flag_is_supported_without_claiming_complete_output() {
+    let mut record = result_record();
+    record
+        .attributes
+        .iter_mut()
+        .find(|item| item.key == "output_truncated")
+        .unwrap()
+        .value = TelemetryValue::String("true".into());
+    assert!(event_summary(&record).contains("output truncated"));
+    assert!(detail_text(&record).contains("Sender reports output was truncated"));
+    record
+        .attributes
+        .iter_mut()
+        .find(|item| item.key == "output_truncated")
+        .unwrap()
+        .value = TelemetryValue::String("false".into());
+    assert!(!detail_text(&record).contains("Sender reports output was truncated"));
+    assert!(!detail_text(&record).contains("complete output"));
+}
+
+#[test]
+fn adapted_tool_records_correlate_without_inventing_a_source() {
+    use teamy_codex::telemetry::{Correlation, correlate, from_telemetry_record};
+    let mut result = result_record();
+    result.attributes.extend([
+        Attribute {
+            key: "conversation.id".into(),
+            value: TelemetryValue::String("synthetic-session".into()),
+        },
+        Attribute {
+            key: "call_id".into(),
+            value: TelemetryValue::String("synthetic-call".into()),
+        },
+    ]);
+    let mut decision = result.clone();
+    decision.event_name = "codex.tool_decision".into();
+    let events = [
+        from_telemetry_record(&result),
+        from_telemetry_record(&decision),
+    ];
+    let rows = correlate(&events);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        (rows[0].decision, rows[0].result, rows[0].correlation),
+        (Some(1), Some(0), Correlation::SourceUnknown)
+    );
+    let duplicated = [events[0].clone(), events[0].clone(), events[1].clone()];
+    assert!(
+        correlate(&duplicated)
+            .iter()
+            .all(|row| row.correlation == Correlation::Ambiguous)
+    );
+}
+
+#[test]
 fn process_logs_are_acknowledged_only_after_delivery() {
     let capture = TerminalCapture::default();
     let mut writer = capture.make_writer();

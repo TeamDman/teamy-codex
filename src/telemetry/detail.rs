@@ -71,6 +71,8 @@ pub fn command_detail(event: &CodexEvent) -> CommandDetail {
         output: text(event.field("output")),
         output_truncated: match event.field("output_truncated") {
             Some(FieldValue::Bool(value)) => Some(*value),
+            Some(FieldValue::Text(value)) if value == "true" => Some(true),
+            Some(FieldValue::Text(value)) if value == "false" => Some(false),
             _ => None,
         },
     }

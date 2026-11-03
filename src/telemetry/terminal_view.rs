@@ -1,9 +1,9 @@
 //! Terminal-first OTLP overview. Incoming records are not re-emitted as tracing events.
-use crate::telemetry::escape_display;
 use crate::telemetry::terminal_capture::TerminalCapture;
 use crate::telemetry::terminal_foundation::InlineTerminal;
 pub use crate::telemetry::terminal_foundation::print_above;
 use crate::telemetry::terminal_navigation::{Navigation, Screen};
+use crate::telemetry::{ShellKind, command_detail, escape_display, from_telemetry_record};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use eyre::{Context, ContextCompat, Result, bail};
 use ratatui::widgets::Paragraph;
@@ -95,7 +95,8 @@ pub fn event_summary(record: &TelemetryRecord) -> String {
     let truncated = if matches!(
         record.attribute("output_truncated"),
         Some(TelemetryValue::Bool(true))
-    ) {
+    ) || matches!(record.attribute("output_truncated"), Some(TelemetryValue::String(value)) if value == "true")
+    {
         " · output truncated"
     } else {
         ""
@@ -124,6 +125,29 @@ fn single_line(input: &str) -> String {
 #[must_use]
 pub fn detail_text(record: &TelemetryRecord) -> String {
     let mut text = String::new();
+    let detail = command_detail(&from_telemetry_record(record));
+    if let Some(command) = &detail.command {
+        text.push_str("Command:\n");
+        text.push_str(&escape_display(command));
+        text.push_str("\n\nShell: ");
+        match &detail.shell {
+            ShellKind::PowerShell(shell) => {
+                text.push_str("PowerShell (");
+                text.push_str(&escape_display(shell));
+                text.push(')');
+            }
+            ShellKind::Other(shell) => text.push_str(&escape_display(shell)),
+            ShellKind::Unknown => text.push_str("unknown or implicit"),
+        }
+        if let Some(workdir) = &detail.workdir {
+            text.push_str("\nWorking directory: ");
+            text.push_str(&escape_display(workdir));
+        }
+        text.push_str("\n\n");
+    }
+    if detail.output_truncated == Some(true) {
+        text.push_str("Sender reports output was truncated.\n\n");
+    }
     for (key, title) in [("arguments", "Arguments"), ("output", "Output preview")] {
         if let Some(TelemetryValue::String(value)) = record.attribute(key) {
             text.push_str(title);

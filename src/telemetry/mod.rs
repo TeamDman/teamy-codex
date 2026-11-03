@@ -3,6 +3,8 @@ mod correlate;
 mod detail;
 mod event;
 #[cfg(feature = "telemetry")]
+mod otlp_adapter;
+#[cfg(feature = "telemetry")]
 pub mod terminal_capture;
 #[cfg(feature = "telemetry")]
 mod terminal_foundation;
@@ -27,4 +29,6 @@ pub mod windows_foundation;
 pub use correlate::{Correlation, ToolCallRow, correlate};
 pub use detail::{CommandDetail, ShellKind, command_detail, escape_display};
 pub use event::{CodexEvent, Field, FieldValue};
+#[cfg(feature = "telemetry")]
+pub use otlp_adapter::from_telemetry_record;
 pub use tool_details::{ToolDecision, ToolResult, tool_decision, tool_result};

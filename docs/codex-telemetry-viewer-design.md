@@ -31,7 +31,9 @@ Names are provisional. Keep the existing default formatter graph intact and plac
 
 The local `telemetry` module supplies a separate Facet-backed `CodexEvent` model,
 typed unknown fields, correlation rows and an `exec_command` detail extractor.
-It does not receive records or start an application. Correlation pairs exactly
+An explicit adapter converts admitted OTLP event attributes to this model;
+the terminal detail view uses it to display recognized command, shell and
+working-directory fields. The original record remains available. Correlation pairs exactly
 one decision and one result for the same session/call and matching source;
 missing source is explicitly marked uncertain, duplicates remain ambiguous,
 and missing IDs or unrelated event types remain visible as separate rows.
@@ -47,9 +49,11 @@ different Facet identities. Convert between their explicit data types at the
 adapter boundary rather than assuming the Facet traits are interchangeable;
 the presentation model alone does not require a consumer-wide Facet migration.
 The terminal command uses the owned-registry Facet JSON identity for its optional
-event file. The Codex-specific event mapping, rich PowerShell view, reusable
-terminal extraction and eframe shell remain unimplemented. No real Codex data
-is accessed by these model tests.
+event file. The event mapping and plain-text command preview are synthetic-tested;
+the terminal does not yet display paired correlation rows. An eframe shell and
+real Codex capture remain unqualified. No real Codex data is accessed by these
+model tests. [Space and Library integration research](space-library-integration.md)
+describes a separate possible user-directed file flow.
 
 ## Proposed boundaries
 

@@ -11,7 +11,12 @@ Received event summaries and ordinary process logs are printed above the view.
 Untrusted control and bidirectional formatting characters are escaped. Lines
 that do not fit the terminal width are clipped with an ellipsis. Use Up/Down to
 select a retained event and Enter to inspect its escaped arguments, output and
-raw fields; scroll with Up/Down, Page Up/Down, Home or End, and use Escape to
+raw fields. For a recognized `exec_command` argument object, the detail view
+also renders the command, explicitly named shell and working directory; an
+omitted shell is shown as unknown or implicit. The original argument text and
+complete admitted record remain available. The view reports a sender-declared
+truncation but cannot establish complete raw process output. Scroll with
+Up/Down, Page Up/Down, Home or End, and use Escape to
 return. This only shows what the sender delivered, including any upstream
 truncation; it does not execute commands. An evicted selection is identified
 explicitly. Counts distinguish accepted records, retained
@@ -36,6 +41,39 @@ feature and can be omitted with `--no-default-features`. No service, tray,
 global hotkey or console visibility handling is installed. Do not configure
 real Codex telemetry or perform a live capture without specific approval; use
 synthetic data and an isolated temporary configuration for later qualification.
+
+## Proposed isolated Codex qualification
+
+This is a test plan, not an instruction to change the current configuration.
+It requires specific approval before a real Codex process or its telemetry is
+started. First qualify the tray Close/Show/Exit lifecycle with the fabricated
+event in [the tray guide](windows-tray-telemetry.md). For a separate Codex
+test, run one new `codex exec` session with `--ephemeral` and
+`--ignore-user-config`, using only process-scoped overrides for OTLP/HTTP
+binary logs at the selected IPv4 loopback port. Explicitly leave prompt,
+agent-response and guardian-assessment content logging off and do not opt in
+to trace or metrics export. Verify the installed version accepts each override
+before relying on it; administrator requirements can still apply.
+
+Use an invented request asking for one harmless PowerShell `Write-Output` call
+and no file inspection. The model may decline or choose a different action, so
+the actual tool invocation and approval remain observable test results rather
+than assumptions. The installed CLI's `--ignore-user-config` still uses its
+configured authentication and `--ephemeral` only promises not to persist the
+session files; neither flag proves that every cache, log, network request or
+environment variable is isolated. The test may contact the model provider.
+
+Even with raw prompt logging disabled, exported records can contain command
+arguments, output previews, conversation identifiers, model and runtime
+metadata, and other tool fields. The default sender output limit is a preview,
+not a guarantee of complete stdout. Do not select `--events-file` or
+`--log-file` for this test: retained events live in bounded process memory,
+and the terminal or its host may retain rendered text in scrollback. The
+loopback endpoint accepts local senders that can reach its selected port; it
+is not an authentication boundary. Stop the test process and receiver, then
+report observed events, loss/truncation and cleanup without copying sensitive
+records into a report. Do not inspect existing private Codex sessions or alter
+the user's persistent telemetry configuration.
 
 The synthetic test suite checks loopback delivery and shutdown, scrollback
 insertion with Ratatui's test backend, escaped summaries, explicit loss and
