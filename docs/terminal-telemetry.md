@@ -55,6 +55,27 @@ agent-response and guardian-assessment content logging off and do not opt in
 to trace or metrics export. Verify the installed version accepts each override
 before relying on it; administrator requirements can still apply.
 
+The proposed limits are one receiver and one new Codex CLI process, with a
+five-minute observation window. Use an unused OS-selected port (`--port 0`),
+shown in the receiver, and direct only that process's log exporter to its
+`http://127.0.0.1:<port>/v1/logs` endpoint. Choose the read-only Codex sandbox
+and a temporary empty working directory made specifically for the test, rather
+than a private project. Do not resume or attach to an existing conversation.
+Use normal approval handling; if the agent requests anything other than the
+invented PowerShell output test, decline it and stop. If the process has not
+completed by five minutes, request its normal cancellation, stop the receiver
+through its UI and report whether both actually exited; do not terminate an
+unrelated process or keep the listener running.
+
+The exporter override is process-scoped, not written to the user's
+`config.toml`. No service, startup entry, firewall rule, credential or
+persistent remote access is created. The temporary working directory and
+terminal scrollback are local side effects; runtime logs, caches and the
+provider's own handling are not fully characterized. Delete only a verified
+test-specific temporary directory after its processes have exited and after
+the user has authorized this qualification. Stop if any required override is
+unsupported instead of silently falling back to unknown settings.
+
 Use an invented request asking for one harmless PowerShell `Write-Output` call
 and no file inspection. The model may decline or choose a different action, so
 the actual tool invocation and approval remain observable test results rather

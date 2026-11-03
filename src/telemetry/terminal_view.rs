@@ -7,6 +7,7 @@ use crate::telemetry::{ShellKind, command_detail, escape_display, from_telemetry
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use eyre::{Context, ContextCompat, Result, bail};
 use ratatui::widgets::Paragraph;
+use std::fmt::Write as _;
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, IsTerminal, Write};
 use std::sync::{Arc, Mutex};
@@ -92,6 +93,33 @@ pub fn event_summary(record: &TelemetryRecord) -> String {
         Some(TelemetryValue::String(value)) => value.as_str(),
         _ => "unknown tool",
     };
+    let mut summary = format!("{} · {}", event_name(record), tool);
+    if event_name(record) == "codex.tool_result" {
+        match record.attribute("success") {
+            Some(TelemetryValue::Bool(true)) => summary.push_str(" · success"),
+            Some(TelemetryValue::Bool(false)) => summary.push_str(" · failed"),
+            Some(TelemetryValue::String(value)) if value == "true" => {
+                summary.push_str(" · success");
+            }
+            Some(TelemetryValue::String(value)) if value == "false" => {
+                summary.push_str(" · failed");
+            }
+            _ => {}
+        }
+        let duration = match record.attribute("duration_ms") {
+            Some(TelemetryValue::Integer(value)) => u64::try_from(*value).ok(),
+            Some(TelemetryValue::String(value)) => value.parse::<u64>().ok(),
+            _ => None,
+        };
+        if let Some(duration) = duration {
+            let _ = write!(summary, " · {duration} ms");
+        }
+    } else if event_name(record) == "codex.tool_decision"
+        && let Some(TelemetryValue::String(decision)) = record.attribute("decision")
+    {
+        summary.push_str(" · ");
+        summary.push_str(decision);
+    }
     let truncated = if matches!(
         record.attribute("output_truncated"),
         Some(TelemetryValue::Bool(true))
@@ -101,7 +129,8 @@ pub fn event_summary(record: &TelemetryRecord) -> String {
     } else {
         ""
     };
-    single_line(&format!("{} · {}{}", event_name(record), tool, truncated))
+    summary.push_str(truncated);
+    single_line(&summary)
 }
 
 /// Serialize an admitted record to a caller-owned NDJSON sink.

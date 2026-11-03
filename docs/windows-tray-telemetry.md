@@ -51,6 +51,15 @@ build both optional binaries without activating them:
 cargo build --offline --locked --features windows-tray --bin teamy-codex-tray --bin teamy-codex-ui
 ```
 
+The proposed smoke test lasts at most five minutes: one unelevated owner,
+one app-owned console child, and an IPv4 loopback-only HTTP listener on an
+OS-selected port. It creates a temporary tray icon and window. It neither
+registers startup nor installs a service, creates a credential or alters
+firewall or telemetry settings. The test sends only the fabricated event
+below and uses no event or process-log file. The console Close, tray Show and
+tray Exit actions affect the new test instance. If normal Exit does not finish,
+report the remaining process and stop; do not kill unrelated processes.
+
 From the existing terminal, launch the separate application and retain its
 process handle. This intentionally creates a tray icon and a new console:
 

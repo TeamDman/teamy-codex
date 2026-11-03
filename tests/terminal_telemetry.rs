@@ -74,6 +74,47 @@ fn cursor_counts_loss_and_does_not_repeat_records() {
 }
 
 #[test]
+fn result_and_decision_summaries_show_only_known_safe_values() {
+    let mut record = result_record();
+    record.attributes.extend([
+        Attribute {
+            key: "success".into(),
+            value: TelemetryValue::String("false".into()),
+        },
+        Attribute {
+            key: "duration_ms".into(),
+            value: TelemetryValue::Integer(123),
+        },
+    ]);
+    let summary = event_summary(&record);
+    assert!(summary.contains("failed · 123 ms · output truncated"));
+    record
+        .attributes
+        .iter_mut()
+        .find(|item| item.key == "duration_ms")
+        .unwrap()
+        .value = TelemetryValue::Integer(-1);
+    record
+        .attributes
+        .iter_mut()
+        .find(|item| item.key == "success")
+        .unwrap()
+        .value = TelemetryValue::String("unknown".into());
+    let unknown = event_summary(&record);
+    assert!(!unknown.contains("failed"));
+    assert!(!unknown.contains(" ms"));
+    record.event_name = "codex.tool_decision".into();
+    record.attributes.push(Attribute {
+        key: "decision".into(),
+        value: TelemetryValue::String("deny\u{1b}[31m\nnext".into()),
+    });
+    let decision = event_summary(&record);
+    assert!(decision.contains("deny\\u{1b}[31m ⏎ next"));
+    assert!(!decision.contains('\u{1b}'));
+    assert!(!decision.contains('\n'));
+}
+
+#[test]
 fn selection_uses_stable_sequence_and_marks_evicted_records() {
     use teamy_codex::telemetry::terminal_navigation::{Navigation, Screen};
     let mut store = RecordStore::new(StoreLimits {
