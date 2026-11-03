@@ -88,3 +88,59 @@ fn oversized_serialized_event_reports_history_rejection() {
     assert!(!retain_event(&mut history, &event(&"x".repeat(2048))).unwrap());
     assert_eq!(history.stats().rejected, 1);
 }
+
+#[test]
+fn synthetic_show_probe_detects_a_child_closing_before_confirmation() {
+    let mut child = Supervisor::default();
+    let generation = spawn(&mut child, "close-on-probe");
+    wait_for(&mut child, |event| {
+        matches!(event, ChildEvent::Message(Message::Ready { .. }))
+    });
+    child
+        .queue(Message::AppEvent {
+            generation,
+            kind: 1,
+            payload: 42u64.to_be_bytes().to_vec(),
+        })
+        .unwrap();
+    wait_for(&mut child, |event| {
+        matches!(event, ChildEvent::Disconnected)
+    });
+    child.shutdown(Duration::from_secs(1)).unwrap();
+    let next = spawn(&mut child, "normal");
+    assert_eq!(next, generation + 1);
+    wait_for(&mut child, |event| {
+        matches!(event, ChildEvent::Message(Message::Ready { .. }))
+    });
+    child
+        .queue(Message::AppEvent {
+            generation: next,
+            kind: 1,
+            payload: 42u64.to_be_bytes().to_vec(),
+        })
+        .unwrap();
+    wait_for(
+        &mut child,
+        |event| matches!(event, ChildEvent::Message(Message::Intent { generation, kind: 1, payload }) if *generation == next && payload == &42u64.to_be_bytes()),
+    );
+    child.shutdown(Duration::from_secs(1)).unwrap();
+}
+
+#[test]
+fn slow_child_is_stopped_by_owner_deadline_before_replacement() {
+    let mut child = Supervisor::default();
+    spawn(&mut child, "slow");
+    wait_for(&mut child, |event| {
+        matches!(event, ChildEvent::Message(Message::Ready { .. }))
+    });
+    assert_eq!(
+        child
+            .shutdown(Duration::from_millis(10))
+            .unwrap_err()
+            .kind(),
+        std::io::ErrorKind::TimedOut
+    );
+    assert!(!child.is_running());
+    assert_eq!(spawn(&mut child, "normal"), 2);
+    child.shutdown(Duration::from_secs(1)).unwrap();
+}

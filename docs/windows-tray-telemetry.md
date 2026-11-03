@@ -23,8 +23,10 @@ re-emitted into tracing or an OTLP exporter.
 Show, Hide and Exit are typed tray actions. `q`, Escape at the overview, or
 Hide closes the UI child while the owner and receiver continue. Show opens one
 new UI child after the owner observes the previous child close. A Show request
-that races with a window Close before the owner detects it can be ignored; use
-Show again after closure. The owner retains up to 1,000 combined event, status and process
+remains pending until the current child confirms it can process the request;
+if it disconnects first, the owner starts at most one replacement. A child that
+does not respond within two seconds is stopped on a bounded deadline. Hide and
+Exit cancel a pending Show. The owner retains up to 1,000 combined event, status and process
 log records within an 8 MiB payload budget; the child replays retained records
 above its inline view. The UI reports evictions and rejected oversized records;
 frames are limited to 64 KiB. Acknowledging delivery does not erase history.

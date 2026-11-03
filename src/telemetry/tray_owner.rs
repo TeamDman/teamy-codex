@@ -2,6 +2,7 @@
 use super::terminal_capture::TerminalCapture;
 use super::terminal_view::{TelemetryCursor, write_event};
 use super::tray_app::{EventSource, TrayControl, TrayOptions};
+use super::tray_visibility::{SHOW_PROBE_KIND, Visibility};
 use super::ui_process::{ChildConsole, ChildEvent, History, Message, Supervisor};
 use super::windows_foundation::{DesktopBackend, TrayAction};
 use eyre::{Context, Result};
@@ -9,7 +10,7 @@ use std::ffi::OsString;
 use std::fs::OpenOptions;
 use std::io::{self, BufWriter, Write};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use teamy_tracing::telemetry::otlp_http::{Receiver, ReceiverLimits};
 use teamy_tracing::telemetry::{RecordStore, TelemetryRecord};
 
@@ -30,6 +31,38 @@ fn retain_text(history: &mut History, kind: u8, text: &str) {
     payload.push(kind);
     payload.extend_from_slice(text.as_bytes());
     let _ = history.push(payload);
+}
+
+fn close_child(child: &mut Supervisor, visibility: &mut Visibility, history: &mut History) {
+    let generation = child.generation();
+    if let Err(error) = child.shutdown(Duration::from_millis(250)) {
+        retain_text(history, b'L', &format!("UI cleanup: {error}"));
+    }
+    if !child.is_running() {
+        visibility.disconnected(generation);
+    }
+}
+
+fn flush_remaining(
+    store: &Mutex<RecordStore>,
+    cursor: &mut TelemetryCursor,
+    file: &mut Option<BufWriter<std::fs::File>>,
+) -> Result<()> {
+    let remaining = {
+        let store = store
+            .lock()
+            .map_err(|_error| eyre::eyre!("telemetry store poisoned"))?;
+        cursor.take(&store)
+    };
+    for record in &remaining {
+        if let Some(file) = file.as_mut() {
+            write_event(&mut *file, record)?;
+        }
+    }
+    if let Some(file) = file.as_mut() {
+        file.flush()?;
+    }
+    Ok(())
 }
 
 /// Queue retained records without blocking; the cursor advances only after enqueue.
@@ -97,7 +130,8 @@ pub async fn run<B: DesktopBackend, E: EventSource>(
     let mut child = Supervisor::default();
     let mut sent = 0u64;
     let mut gap = None;
-    let mut wanted = true;
+    let mut visibility = Visibility::default();
+    visibility.show(Instant::now());
     let mut closing = false;
     let mut source_status = String::new();
     let mut last_dropped = 0u64;
@@ -106,26 +140,44 @@ pub async fn run<B: DesktopBackend, E: EventSource>(
             for _ in 0..16 {
                 match child.poll() {
                     Ok(Some(ChildEvent::Message(Message::Close { .. }))) => { closing = true; },
-                    Ok(Some(ChildEvent::Message(Message::Intent { .. }))) => { retain_text(&mut history, b'L', "Unsupported UI intent"); if let Err(error) = child.shutdown(Duration::from_millis(250)) { retain_text(&mut history, b'L', &format!("UI cleanup: {error}")); } sent = 0; gap = None; closing = child.is_running(); },
+                    Ok(Some(ChildEvent::Message(Message::Intent { generation, kind: SHOW_PROBE_KIND, payload }))) if payload.len() == 8 => { let mut bytes = [0; 8]; bytes.copy_from_slice(&payload); visibility.confirmed(generation, u64::from_be_bytes(bytes)); },
+                    Ok(Some(ChildEvent::Message(Message::Intent { .. }))) => { retain_text(&mut history, b'L', "Unsupported UI intent"); close_child(&mut child, &mut visibility, &mut history); sent = 0; gap = None; closing = child.is_running(); },
                     Ok(Some(ChildEvent::Message(_))) => {},
-                    Ok(Some(ChildEvent::Exited(status))) => { if !status.success() { retain_text(&mut history, b'L', &format!("UI child exited: {status}")); } sent = 0; gap = None; closing = false; },
-                    Ok(Some(ChildEvent::Disconnected)) => { if let Err(error) = child.shutdown(Duration::from_millis(250)) { retain_text(&mut history, b'L', &format!("UI disconnect cleanup: {error}")); } sent = 0; gap = None; closing = child.is_running(); },
-                    Ok(Some(ChildEvent::Failed(error))) => { retain_text(&mut history, b'L', &error); if let Err(error) = child.shutdown(Duration::from_millis(250)) { retain_text(&mut history, b'L', &format!("UI cleanup: {error}")); } sent = 0; gap = None; closing = child.is_running(); },
+                    Ok(Some(ChildEvent::Exited(status))) => { if !status.success() { retain_text(&mut history, b'L', &format!("UI child exited: {status}")); } visibility.disconnected(child.generation()); sent = 0; gap = None; closing = false; },
+                    Ok(Some(ChildEvent::Disconnected)) => { close_child(&mut child, &mut visibility, &mut history); sent = 0; gap = None; closing = child.is_running(); },
+                    Ok(Some(ChildEvent::Failed(error))) => { retain_text(&mut history, b'L', &error); close_child(&mut child, &mut visibility, &mut history); sent = 0; gap = None; closing = child.is_running(); },
                     Ok(None) => break,
-                    Err(error) => { retain_text(&mut history, b'L', &format!("UI protocol: {error}")); if let Err(error) = child.shutdown(Duration::from_millis(250)) { retain_text(&mut history, b'L', &format!("UI cleanup: {error}")); } sent = 0; gap = None; closing = child.is_running(); break; },
+                    Err(error) => { retain_text(&mut history, b'L', &format!("UI protocol: {error}")); close_child(&mut child, &mut visibility, &mut history); sent = 0; gap = None; closing = child.is_running(); break; },
                 }
             }
             for _ in 0..16 {
                 match control.next_action()? {
-                    Some(TrayAction::Exit) => return Ok::<(), eyre::Report>(()),
-                    Some(TrayAction::Hide) => { wanted = false; if let Err(error) = child.shutdown(Duration::from_millis(250)) { retain_text(&mut history, b'L', &format!("UI close: {error}")); } sent = 0; gap = None; closing = child.is_running(); },
-                    Some(TrayAction::Show) => { if !child.is_running() || closing { wanted = true; } },
+                    Some(TrayAction::Exit) => { visibility.stop(); return Ok::<(), eyre::Report>(()); },
+                    Some(TrayAction::Hide) => { visibility.hide(); close_child(&mut child, &mut visibility, &mut history); sent = 0; gap = None; closing = child.is_running(); },
+                    Some(TrayAction::Show) => visibility.show(Instant::now()),
                     None => break,
                 }
             }
-            if wanted && !child.is_running() {
-                wanted = false;
-                if let Err(error) = child.spawn(&executable, &[OsString::from(&address)], ChildConsole::NewConsole) { retain_text(&mut history, b'L', &format!("UI start: {error}")); }
+            if visibility.wants_child() && !child.is_running() {
+                if visibility.claim_spawn() {
+                    match child.spawn(&executable, &[OsString::from(&address)], ChildConsole::NewConsole) { Ok(_) => visibility.started(Instant::now()), Err(error) => { retain_text(&mut history, b'L', &format!("UI start: {error}")); visibility.hide(); } }
+                } else {
+                    retain_text(&mut history, b'L', "UI could not be shown; select Show to retry");
+                    visibility.hide();
+                }
+            }
+            if child.is_ready() && !closing && let Some(request) = visibility.probe_needed() {
+                let generation = child.generation();
+                match child.queue(Message::AppEvent { generation, kind: SHOW_PROBE_KIND, payload: request.to_be_bytes().to_vec() }) {
+                    Ok(()) => visibility.probe_sent(generation, request),
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {},
+                    Err(error) => { retain_text(&mut history, b'L', &format!("UI show probe: {error}")); close_child(&mut child, &mut visibility, &mut history); sent = 0; gap = None; closing = child.is_running(); },
+                }
+            }
+            if visibility.timed_out(Instant::now()) {
+                retain_text(&mut history, b'L', "UI show probe timed out");
+                close_child(&mut child, &mut visibility, &mut history);
+                sent = 0; gap = None; closing = child.is_running();
             }
             let (records, stats) = {
                 let store = store.lock().map_err(|_error| eyre::eyre!("telemetry store poisoned"))?;
@@ -142,7 +194,7 @@ pub async fn run<B: DesktopBackend, E: EventSource>(
             for (id, line) in pending { retain_text(&mut history, b'L', &line); capture.acknowledge(id)?; }
             if dropped != last_dropped { retain_text(&mut history, b'S', &format!("Process logs evicted: {dropped}")); last_dropped = dropped; }
             if child.is_ready() && let Err(error) = replay_available(&history, &mut child, &mut sent, &mut gap) {
-                retain_text(&mut history, b'L', &format!("UI delivery: {error}")); if let Err(error) = child.shutdown(Duration::from_millis(250)) { retain_text(&mut history, b'L', &format!("UI cleanup: {error}")); } sent = 0; gap = None; closing = child.is_running();
+                retain_text(&mut history, b'L', &format!("UI delivery: {error}")); close_child(&mut child, &mut visibility, &mut history); sent = 0; gap = None; closing = child.is_running();
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
@@ -154,19 +206,6 @@ pub async fn run<B: DesktopBackend, E: EventSource>(
         .await
         .wrap_err("receiver shutdown timed out")
         .and_then(|result| result.map_err(eyre::Report::from));
-    let remaining = {
-        let store = store
-            .lock()
-            .map_err(|_error| eyre::eyre!("telemetry store poisoned"))?;
-        cursor.take(&store)
-    };
-    for record in &remaining {
-        if let Some(file) = file.as_mut() {
-            write_event(&mut *file, record)?;
-        }
-    }
-    if let Some(file) = file.as_mut() {
-        file.flush()?;
-    }
+    flush_remaining(&store, &mut cursor, &mut file)?;
     run.and(child_shutdown).and(receiver_shutdown)
 }

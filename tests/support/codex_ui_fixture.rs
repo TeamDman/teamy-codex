@@ -82,6 +82,23 @@ fn main() -> io::Result<()> {
                 },
             )?,
             Ok(Message::Gap { .. }) => {}
+            Ok(Message::AppEvent {
+                generation,
+                kind: 1,
+                payload,
+            }) if payload.len() == 8 => {
+                if mode == "close-on-probe" {
+                    return Ok(());
+                }
+                write_message(
+                    &mut output,
+                    &Message::Intent {
+                        generation,
+                        kind: 1,
+                        payload,
+                    },
+                )?;
+            }
             Ok(Message::Close { .. }) => return Ok(()),
             Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => return Ok(()),
             Ok(_) => return Err(io::Error::other("unexpected message")),

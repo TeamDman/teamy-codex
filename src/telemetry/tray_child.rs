@@ -2,6 +2,7 @@
 use super::terminal_foundation::{InlineTerminal, print_above};
 use super::terminal_navigation::{Navigation, Screen};
 use super::terminal_view::{detail_rows, detail_text, event_summary};
+use super::tray_visibility::SHOW_PROBE_KIND;
 use super::ui_process::{Message, connect_child, read_next, write_message};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use eyre::{Context, ContextCompat, Result, bail};
@@ -29,6 +30,23 @@ fn start_reader(
             }
         })?;
     Ok(receiver)
+}
+
+fn show_confirmation(generation: u64, payload: Vec<u8>) -> Message {
+    Message::Intent {
+        generation,
+        kind: SHOW_PROBE_KIND,
+        payload,
+    }
+}
+
+fn open_console() -> Result<(std::fs::File, std::fs::File)> {
+    let input = OpenOptions::new().read(true).write(true).open("CONIN$")?;
+    let output = OpenOptions::new().read(true).write(true).open("CONOUT$")?;
+    if !input.is_terminal() || !output.is_terminal() {
+        bail!("UI child requires its own console");
+    }
+    Ok((input, output))
 }
 
 fn present<B: Backend>(
@@ -146,11 +164,7 @@ pub fn main() -> Result<()> {
     let Some(Message::Hello { generation }) = read_next(&mut input)? else {
         bail!("missing UI hello");
     };
-    let console_input = OpenOptions::new().read(true).write(true).open("CONIN$")?;
-    let console_output = OpenOptions::new().read(true).write(true).open("CONOUT$")?;
-    if !console_input.is_terminal() || !console_output.is_terminal() {
-        bail!("UI child requires its own console");
-    }
+    let (_console_input, console_output) = open_console()?;
     let mut guard = InlineTerminal::open(BufWriter::new(console_output), 12)?;
     let terminal = guard.terminal_mut().context("terminal closed")?;
     write_message(&mut output, &Message::Ready { generation })?;
@@ -182,6 +196,13 @@ pub fn main() -> Result<()> {
                         },
                     )?;
                     last_sequence = sequence;
+                }
+                Ok(Ok(Some(Message::AppEvent {
+                    generation: id,
+                    kind: SHOW_PROBE_KIND,
+                    payload,
+                }))) if id == generation && payload.len() == 8 => {
+                    write_message(&mut output, &show_confirmation(generation, payload))?;
                 }
                 Ok(Ok(Some(Message::Close { generation: id }))) if id == generation => break 'ui,
                 Ok(Ok(None)) | Err(mpsc::TryRecvError::Disconnected) => break 'ui,
