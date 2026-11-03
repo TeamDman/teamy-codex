@@ -50,10 +50,21 @@ started. First qualify the tray Close/Show/Exit lifecycle with the fabricated
 event in [the tray guide](windows-tray-telemetry.md). For a separate Codex
 test, run one new `codex exec` session with `--ephemeral` and
 `--ignore-user-config`, using only process-scoped overrides for OTLP/HTTP
-binary logs at the selected IPv4 loopback port. Explicitly leave prompt,
-agent-response and guardian-assessment content logging off and do not opt in
-to trace or metrics export. Verify the installed version accepts each override
-before relying on it; administrator requirements can still apply.
+binary logs at the selected IPv4 loopback port. Explicitly leave prompt
+logging off and do not opt in to trace or metrics export. Verify the installed
+version accepts each override before relying on it; administrator requirements
+can still apply.
+
+The installed CLI reports `0.156.1`. The matching release's
+[`OtelConfigToml`](https://github.com/openai/codex/blob/rust-v0.156.1/codex-rs/config/src/types.rs)
+does not define the newer `log_agent_responses` or
+`log_guardian_assessments` settings shown in current documentation. Its
+[`session_telemetry.rs`](https://github.com/openai/codex/blob/rust-v0.156.1/codex-rs/otel/src/events/session_telemetry.rs)
+does not contain those named event emitters, but this does not prove no other
+path can export response or assessment content. The installed binary has not
+been reproducibly matched to that tag. Do not pass unsupported settings or
+claim they were explicitly disabled; resolve this version mismatch and obtain
+approval for any remaining capture uncertainty before starting a live test.
 
 The proposed limits are one receiver and one new Codex CLI process, with a
 five-minute observation window. Use an unused OS-selected port (`--port 0`),
