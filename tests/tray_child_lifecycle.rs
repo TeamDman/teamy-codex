@@ -140,6 +140,9 @@ fn slow_child_is_stopped_by_owner_deadline_before_replacement() {
             .kind(),
         std::io::ErrorKind::TimedOut
     );
+    if child.is_running() {
+        child.shutdown(Duration::from_secs(2)).unwrap();
+    }
     assert!(!child.is_running());
     assert_eq!(spawn(&mut child, "normal"), 2);
     child.shutdown(Duration::from_secs(1)).unwrap();

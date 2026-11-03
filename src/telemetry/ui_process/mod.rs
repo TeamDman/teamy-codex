@@ -1,4 +1,4 @@
-//! Copied from teamy-rust-cli commit 1d6de93; paths are nested under telemetry.
+//! Copied from teamy-rust-cli commit d3e304a; paths are nested under telemetry.
 mod child_channel;
 mod history;
 mod launcher;

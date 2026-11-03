@@ -9,7 +9,7 @@ does not attach to or hide an inherited terminal. The existing
 terminal and does not start a tray. The copied Windows foundation is from
 `teamy-rust-cli` commit `454ab86`; tray routing and telemetry lifecycle are
 Codex-specific. The child process and bounded protocol foundation are copied
-from `teamy-rust-cli` commit `1d6de93`, with module paths adapted. There is no
+from `teamy-rust-cli` commit `d3e304a`, with module paths adapted. There is no
 machine-local dependency or new published crate.
 
 The tray executable accepts `--port NUMBER`, `--events-file PATH`, and
@@ -34,6 +34,10 @@ On tray Exit the owner stops its child and receiver; in-memory history ends with
 the owner, so use a requested file sink for persistence. The intended behavior
 when the child console's Close button is used is for only that child to exit;
 this still requires an actual Windows host test.
+If child termination is requested but exit is not yet observed, the supervisor
+retains the owned process handle, reports the timeout and does not start a new
+child. It continues polling for exit. On owner shutdown an unresolved child is
+reported; dropping the supervisor cannot guarantee the OS has stopped it.
 The process returns a failure code on errors; `--log-file` can retain errors
 after logging has initialized. Startup failures before then may not be visible
 in this Windows-subsystem application.
