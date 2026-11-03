@@ -56,7 +56,8 @@ windows = { version = "0.62.2", features = [
 [features]
 default = ["telemetry"]
 telemetry = ["dep:teamy-tracing", "dep:owned-facet-json", "dep:ratatui"]
-windows-tray = ["telemetry", "windows/Win32_Foundation", "windows/Win32_Graphics_Gdi", "windows/Win32_Security", "windows/Win32_System_LibraryLoader", "windows/Win32_System_Threading", "windows/Win32_UI_Shell", "windows/Win32_UI_WindowsAndMessaging"]
+windows-tray = ["telemetry", "windows/Wdk_System_Threading", "windows/Win32_Foundation", "windows/Win32_Graphics_Gdi", "windows/Win32_Security", "windows/Win32_System_Kernel", "windows/Win32_System_LibraryLoader", "windows/Win32_System_Pipes", "windows/Win32_System_Threading", "windows/Win32_UI_Shell", "windows/Win32_UI_WindowsAndMessaging"]
+ui-process-fixtures = ["windows-tray"]
 extended_observability = []
 tracy = ["extended_observability", "dep:tracing-tracy"]
 
@@ -64,6 +65,16 @@ tracy = ["extended_observability", "dep:tracing-tracy"]
 name = "teamy-codex-tray"
 path = "src/bin/teamy_codex_tray.rs"
 required-features = ["windows-tray"]
+
+[[bin]]
+name = "teamy-codex-ui"
+path = "src/bin/teamy_codex_ui.rs"
+required-features = ["windows-tray"]
+
+[[bin]]
+name = "codex-ui-fixture"
+path = "tests/support/codex_ui_fixture.rs"
+required-features = ["ui-process-fixtures"]
 
 [build-dependencies]
 embed-resource = "3.0.6"

@@ -1,10 +1,9 @@
 //! Explicit Windows tray entry point. Native baseline copied from teamy-rust-cli
 //! commit 454ab86; this module contains Codex-specific routing and lifecycle.
 use super::terminal_capture::TerminalCapture;
-use super::terminal_view::{self, TerminalControl, TerminalState};
-use super::windows_foundation::native::{
-    NativeDesktopBackend, OwnedConsole, TrayEvent, TrayEvents,
-};
+use super::terminal_view::{TerminalControl, TerminalState};
+use super::tray_owner;
+use super::windows_foundation::native::{NativeDesktopBackend, TrayEvent, TrayEvents};
 use super::windows_foundation::{ConsoleState, DesktopBackend, DesktopSession, TrayAction};
 use crate::cli::global_args::GlobalArgs;
 use eyre::{Context, Result, bail};
@@ -90,6 +89,19 @@ impl<B: DesktopBackend, E: EventSource> TrayControl<B, E> {
     pub fn activate(&mut self) -> io::Result<()> {
         self.session.activate()
     }
+    /// Read one typed tray action without manipulating any console.
+    /// # Errors
+    /// Returns an error for queue loss, disconnection or native tray errors.
+    pub fn next_action(&mut self) -> Result<Option<TrayAction>> {
+        if self.events.dropped() != 0 {
+            bail!("tray event queue overflow");
+        }
+        match self.events.next_event()? {
+            Some(TrayEvent::Action(action)) => Ok(Some(action)),
+            Some(TrayEvent::Error(error)) => bail!("tray backend: {error}"),
+            None => Ok(None),
+        }
+    }
     /// # Errors
     /// Returns any console restoration or tray removal failure.
     pub fn shutdown(&mut self) -> io::Result<()> {
@@ -131,14 +143,13 @@ impl<B: DesktopBackend, E: EventSource> TerminalControl for TrayControl<B, E> {
 /// Returns startup, receiver, logging or cleanup failures.
 pub fn main() -> Result<()> {
     let options = TrayOptions::parse(std::env::args_os().skip(1))?;
-    let console = OwnedConsole::allocate().wrap_err("allocate tray console")?;
-    let (backend, events) = NativeDesktopBackend::new(Some(console), 64)?;
-    let mut control = TrayControl::new(backend, events, ConsoleState::OwnedVisible);
+    let (backend, events) = NativeDesktopBackend::new(None, 64)?;
+    let mut control = TrayControl::new(backend, events, ConsoleState::Unavailable);
     let capture = TerminalCapture::install();
     let result = (|| {
         let cancellation = CancellationToken::new();
         let global_args = GlobalArgs {
-            log_file: options.log_file,
+            log_file: options.log_file.clone(),
             ..GlobalArgs::default()
         };
         crate::logging_init::init_logging_with_capture(
@@ -150,12 +161,7 @@ pub fn main() -> Result<()> {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()?;
-        runtime.block_on(terminal_view::run_controlled(
-            options.port.unwrap_or(4318),
-            options.events_file.as_deref(),
-            cancellation,
-            &mut control,
-        ))
+        runtime.block_on(tray_owner::run(&options, &capture, &mut control))
     })();
     let shutdown = control.shutdown().wrap_err("restore console and stop tray");
     if let Err(error) = &result {
@@ -165,21 +171,12 @@ pub fn main() -> Result<()> {
         tracing::error!(error = %error, "tray shutdown failed");
     }
     let replay = capture
-        .finish(std::io::stderr())
-        .wrap_err("replay pending process logs");
-    let mut backend = control.into_backend();
-    let release = if shutdown.is_ok() {
-        backend
-            .release_console()
-            .wrap_err("release app-owned console")
-    } else {
-        Ok(())
-    };
+        .finish(std::io::sink())
+        .wrap_err("finish process log capture");
     let errors = [
         ("application", result),
         ("shutdown", shutdown),
         ("replay", replay),
-        ("console", release),
     ]
     .into_iter()
     .filter_map(|(stage, result)| result.err().map(|error| format!("{stage}: {error:#}")))

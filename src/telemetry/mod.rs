@@ -14,6 +14,12 @@ mod tool_details;
 #[cfg(all(windows, feature = "windows-tray"))]
 pub mod tray_app;
 #[cfg(all(windows, feature = "windows-tray"))]
+pub mod tray_child;
+#[cfg(all(windows, feature = "windows-tray"))]
+pub mod tray_owner;
+#[cfg(all(windows, feature = "windows-tray"))]
+pub mod ui_process;
+#[cfg(all(windows, feature = "windows-tray"))]
 pub mod windows_foundation;
 
 pub use correlate::{Correlation, ToolCallRow, correlate};

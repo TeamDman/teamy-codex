@@ -117,6 +117,24 @@ fn tray_failure_after_hide_still_restores_on_shutdown() {
 }
 
 #[test]
+fn headless_owner_routes_actions_without_touching_a_console() {
+    let backend = Backend::default();
+    let events = Events::default();
+    events.queue.borrow_mut().extend([
+        TrayEvent::Action(TrayAction::Hide),
+        TrayEvent::Action(TrayAction::Show),
+        TrayEvent::Action(TrayAction::Exit),
+    ]);
+    let mut control = TrayControl::new(backend.clone(), events, ConsoleState::Unavailable);
+    control.activate().unwrap();
+    assert_eq!(control.next_action().unwrap(), Some(TrayAction::Hide));
+    assert_eq!(control.next_action().unwrap(), Some(TrayAction::Show));
+    assert_eq!(control.next_action().unwrap(), Some(TrayAction::Exit));
+    control.shutdown().unwrap();
+    assert_eq!(*backend.0.borrow(), ["create", "remove"]);
+}
+
+#[test]
 fn tray_arguments_require_explicit_valid_values() {
     let args = [
         "--port",
