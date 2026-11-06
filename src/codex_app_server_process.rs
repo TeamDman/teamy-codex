@@ -103,9 +103,13 @@ pub fn list_threads_owned(
     cursor: Option<String>,
     cancellation_token: &CancellationToken,
 ) -> eyre::Result<ThreadListPage> {
-    run_owned(command, cancellation_token, move |client, _, _| {
-        client.list_threads(limit, cursor.as_deref())
-    })
+    run_owned(
+        command,
+        cancellation_token,
+        move |client, _, _| client.list_threads(limit, cursor.as_deref()),
+        Some(Duration::from_secs(15)),
+        false,
+    )
 }
 
 /// Create or resume one persisted thread, then run and observe one text turn.
@@ -156,13 +160,91 @@ pub fn run_turn_owned(
                 },
             )
         },
+        None,
+        false,
     )
+}
+
+/// Read a bounded snapshot through an owned proxy or explicitly isolated server.
+/// Never starts/restarts a shared daemon, resumes threads, or sends turn input.
+///
+/// # Errors
+/// Returns an error for invalid request options or cancellation.
+pub fn observe_threads(
+    bin: Option<&str>,
+    home: Option<&str>,
+    socket: Option<&str>,
+    request: crate::active_threads::ActiveThreadsRequest,
+    cancellation: &CancellationToken,
+) -> eyre::Result<crate::active_threads::ActiveThreadsReport> {
+    if request.limit == Some(0) {
+        bail!("--limit must be greater than zero");
+    }
+    if request.isolated && socket.is_some() {
+        bail!("--socket conflicts with --isolated");
+    }
+    let isolated = request.isolated;
+    let mut command = Command::new(bin.unwrap_or("codex"));
+    command.arg("app-server");
+    if isolated {
+        command.arg("--stdio");
+    } else {
+        command.arg("proxy");
+        if let Some(socket) = socket {
+            command.args(["--sock", socket]);
+        }
+    }
+    if let Some(home) = home {
+        command.env("CODEX_HOME", home);
+    }
+    match run_owned(
+        &mut command,
+        cancellation,
+        move |client, _, _| crate::active_threads::inspect(client, &request),
+        Some(Duration::from_secs(15)),
+        true,
+    ) {
+        Ok(report) => Ok(report),
+        Err(error) => {
+            cancellation.bail_if_cancelled()?;
+            // Classify without emitting private protocol payloads. Decode bugs must
+            // remain distinct from source unavailability.
+            let message = error.to_string();
+            let mut report = crate::active_threads::ActiveThreadsReport::disconnected(isolated);
+            if message.contains("observer RPC rejected") {
+                report.coverage.connection = "connected".into();
+                report
+                    .coverage
+                    .issues
+                    .push("metadata RPC rejected or unsupported by selected server".into());
+            } else if message.contains("observer timed out") {
+                report.coverage.connection = "timeout".into();
+                report
+                    .coverage
+                    .issues
+                    .push("snapshot exceeded 15-second deadline".into());
+            } else if error
+                .chain()
+                .any(|cause| cause.downcast_ref::<io::Error>().is_some())
+                || message.contains("app-server closed stdout")
+            {
+                // Disconnected remains explicit; no rows means no activity conclusion.
+            } else {
+                bail!(
+                    "observer protocol or cleanup failed; possible schema/version mismatch (private payload withheld)"
+                );
+            }
+            Ok(report)
+        }
+    }
 }
 
 fn run_owned<T, F>(
     command: &mut Command,
     cancellation_token: &CancellationToken,
     operation: F,
+    timeout: Option<Duration>,
+    observer: bool,
 ) -> eyre::Result<T>
 where
     T: Send + 'static,
@@ -213,8 +295,12 @@ where
         .name("codex-app-server-stdio".to_owned())
         .spawn(move || {
             let mut client = AppServerStdio::new(BufReader::new(stdout), protocol_stdin);
-            let result = client
-                .initialize()
+            let initialized = if observer {
+                client.initialize_observer()
+            } else {
+                client.initialize()
+            };
+            let result = initialized
                 .and_then(|()| operation(&mut client, &protocol_interrupt, &started_sender));
             let _ = sender.send(result);
         })
@@ -234,6 +320,7 @@ where
         &shared_stdin,
         &interrupt_requested,
         cancellation_token,
+        timeout,
     );
 
     child.terminate_and_reap()?;
@@ -261,12 +348,17 @@ fn supervise<T>(
     shared_stdin: &Arc<Mutex<ChildStdin>>,
     interrupt_requested: &Arc<AtomicBool>,
     cancellation_token: &CancellationToken,
+    timeout: Option<Duration>,
 ) -> SupervisedResult<T> {
     let (interrupt_sender, interrupt_receiver) = mpsc::sync_channel(1);
     let mut active_turn = None;
     let mut interrupt_deadline = None;
     let mut interrupt_worker = None;
+    let deadline = timeout.map(|timeout| Instant::now() + timeout);
     let response = loop {
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            break Err(eyre!("observer timed out"));
+        }
         match receiver.try_recv() {
             Ok(result) => break result,
             Err(TryRecvError::Disconnected) => {

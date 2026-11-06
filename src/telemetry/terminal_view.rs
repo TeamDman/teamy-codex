@@ -3,7 +3,9 @@ use crate::telemetry::terminal_capture::TerminalCapture;
 use crate::telemetry::terminal_foundation::InlineTerminal;
 pub use crate::telemetry::terminal_foundation::print_above;
 use crate::telemetry::terminal_navigation::{Navigation, Screen};
-use crate::telemetry::{ShellKind, command_detail, escape_display, from_telemetry_record};
+use crate::telemetry::{
+    Correlation, ShellKind, command_detail, escape_display, from_telemetry_record,
+};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use eyre::{Context, ContextCompat, Result, bail};
 use ratatui::widgets::Paragraph;
@@ -77,11 +79,9 @@ impl TelemetryCursor {
 }
 
 fn event_name(record: &TelemetryRecord) -> &str {
-    if !record.event_name.is_empty() {
-        return &record.event_name;
-    }
     match record.attribute("event.name") {
-        Some(TelemetryValue::String(value)) => value,
+        Some(TelemetryValue::String(value)) if !value.is_empty() => value,
+        _ if !record.event_name.is_empty() => &record.event_name,
         _ => "unknown event",
     }
 }
@@ -89,11 +89,18 @@ fn event_name(record: &TelemetryRecord) -> &str {
 /// A safe one-line summary; arguments and output remain in the bounded store.
 #[must_use]
 pub fn event_summary(record: &TelemetryRecord) -> String {
-    let tool = match record.attribute("tool_name") {
-        Some(TelemetryValue::String(value)) => value.as_str(),
-        _ => "unknown tool",
-    };
-    let mut summary = format!("{} · {}", event_name(record), tool);
+    let name = event_name(record);
+    let mut summary = name.to_owned();
+    match record.attribute("tool_name") {
+        Some(TelemetryValue::String(value)) if !value.is_empty() => {
+            summary.push_str(" · ");
+            summary.push_str(value);
+        }
+        _ if matches!(name, "codex.tool_decision" | "codex.tool_result") => {
+            summary.push_str(" · unknown tool");
+        }
+        _ => {}
+    }
     if event_name(record) == "codex.tool_result" {
         match record.attribute("success") {
             Some(TelemetryValue::Bool(true)) => summary.push_str(" · success"),
@@ -148,6 +155,185 @@ fn single_line(input: &str) -> String {
     escape_display(input)
         .replace('\n', " ⏎ ")
         .replace('\t', " ")
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ToolLink {
+    pub correlation: Correlation,
+    /// Stable sequence in the current store; absent for ambiguous/unmatched events.
+    pub related: Option<u64>,
+}
+
+fn attribute_text<'a>(record: &'a TelemetryRecord, key: &str) -> Option<&'a str> {
+    match record.attribute(key) {
+        Some(TelemetryValue::String(value)) if !value.is_empty() => Some(value),
+        _ => None,
+    }
+}
+
+fn source(record: &TelemetryRecord) -> Option<&str> {
+    let attribute = record
+        .resource_attributes
+        .iter()
+        .find(|attribute| attribute.key == "service.instance.id")?;
+    match &attribute.value {
+        TelemetryValue::String(value) if !value.is_empty() => Some(value),
+        _ => None,
+    }
+}
+
+/// Relate only uniquely matching retained decisions/results; never infer missing IDs.
+#[must_use]
+pub fn tool_link(store: &RecordStore, selected: usize) -> Option<ToolLink> {
+    let selected_record = store.iter().nth(selected)?;
+    let selected_name = event_name(selected_record);
+    if !matches!(selected_name, "codex.tool_decision" | "codex.tool_result") {
+        return None;
+    }
+    let (Some(session), Some(call)) = (
+        attribute_text(selected_record, "conversation.id"),
+        attribute_text(selected_record, "call_id"),
+    ) else {
+        return Some(ToolLink {
+            correlation: Correlation::MissingIdentity,
+            related: None,
+        });
+    };
+    let selected_source = source(selected_record);
+    let mut decisions = 0usize;
+    let mut results = 0usize;
+    let mut related = None;
+    let first = store
+        .stats()
+        .accepted
+        .saturating_sub(store.stats().records as u64)
+        .saturating_add(1);
+    for (index, candidate) in store.iter().enumerate() {
+        if source(candidate) != selected_source
+            || attribute_text(candidate, "conversation.id") != Some(session)
+            || attribute_text(candidate, "call_id") != Some(call)
+        {
+            continue;
+        }
+        match event_name(candidate) {
+            "codex.tool_decision" => decisions += 1,
+            "codex.tool_result" => results += 1,
+            _ => continue,
+        }
+        if index != selected && event_name(candidate) != selected_name {
+            related = Some(first.saturating_add(index as u64));
+        }
+    }
+    let correlation = if decisions > 1 || results > 1 {
+        Correlation::Ambiguous
+    } else if decisions == 1 && results == 1 {
+        if selected_source.is_some() {
+            Correlation::Exact
+        } else {
+            Correlation::SourceUnknown
+        }
+    } else {
+        Correlation::Unmatched
+    };
+    Some(ToolLink {
+        correlation,
+        related: matches!(correlation, Correlation::Exact | Correlation::SourceUnknown)
+            .then_some(related)
+            .flatten(),
+    })
+}
+
+/// Cached rows and identity fingerprint; unrelated incoming events do not rebuild text.
+#[derive(Debug)]
+pub struct DetailCache {
+    pub id: u64,
+    pub width: u16,
+    pub version: u64,
+    pub records: usize,
+    pub link: Option<ToolLink>,
+    pub rows: Vec<String>,
+}
+
+/// Compute changed detail input while the caller has access to the store.
+#[must_use]
+pub fn detail_update(
+    store: &RecordStore,
+    id: u64,
+    width: u16,
+    cache: Option<&mut DetailCache>,
+) -> Option<(TelemetryRecord, Option<TelemetryRecord>, Option<ToolLink>)> {
+    let stats = store.stats();
+    let first = stats
+        .accepted
+        .saturating_sub(stats.records as u64)
+        .saturating_add(1);
+    let index = usize::try_from(id.checked_sub(first)?).ok()?;
+    let selected = store.iter().nth(index)?;
+    if let Some(cache) = cache {
+        if cache.id == id
+            && cache.width == width
+            && cache.version == stats.accepted
+            && cache.records == stats.records
+        {
+            return None;
+        }
+        let link = tool_link(store, index);
+        if cache.id == id && cache.width == width && cache.link == link {
+            cache.version = stats.accepted;
+            cache.records = stats.records;
+            return None;
+        }
+        let related = link
+            .and_then(|link| link.related)
+            .and_then(|seq| usize::try_from(seq.checked_sub(first)?).ok())
+            .and_then(|i| store.iter().nth(i))
+            .cloned();
+        return Some((selected.clone(), related, link));
+    }
+    let link = tool_link(store, index);
+    let related = link
+        .and_then(|link| link.related)
+        .and_then(|seq| usize::try_from(seq.checked_sub(first)?).ok())
+        .and_then(|i| store.iter().nth(i))
+        .cloned();
+    Some((selected.clone(), related, link))
+}
+
+#[must_use]
+pub fn detail_cache(
+    id: u64,
+    width: u16,
+    stats: StoreStats,
+    selected: &TelemetryRecord,
+    related: Option<&TelemetryRecord>,
+    link: Option<ToolLink>,
+) -> DetailCache {
+    let mut text = String::new();
+    if let Some(link) = link {
+        let label = match link.correlation {
+            Correlation::Exact => "matched by source, session and call ID",
+            Correlation::SourceUnknown => "matched by session and call ID; producer source unknown",
+            Correlation::MissingIdentity => "unmatched: missing session or call ID",
+            Correlation::Ambiguous => "ambiguous: duplicate decisions or results",
+            Correlation::Unmatched => "unmatched in retained history",
+            Correlation::OtherEvent => "not a tool event",
+        };
+        let _ = writeln!(text, "Correlation: {label}\n");
+    }
+    text.push_str("Selected event:\n");
+    text.push_str(&detail_text(selected));
+    if let Some(record) = related {
+        let _ = write!(text, "\n\nRelated {}:\n", single_line(event_name(record)));
+        text.push_str(&detail_text(record));
+    }
+    DetailCache {
+        id,
+        width,
+        version: stats.accepted,
+        records: stats.records,
+        link,
+        rows: detail_rows(&text, width),
+    }
 }
 
 /// Preserve the complete record while showing arguments and output as readable text.
@@ -294,14 +480,14 @@ fn run_terminal(
     let capture = TerminalCapture::current().context("terminal log capture not installed")?;
     let mut cursor = TelemetryCursor::default();
     let mut navigation = Navigation::default();
-    let mut details_cache: Option<(u64, u16, Vec<String>)> = None;
+    let mut details_cache: Option<DetailCache> = None;
     loop {
         let visibility = control.poll()?;
         if visibility == TerminalState::Exit {
             break;
         }
         let width = terminal.size()?.width;
-        let (records, stats, selected_summary, selected_record) = {
+        let (records, stats, selected_summary, detail_input) = {
             let store = store
                 .lock()
                 .map_err(|_poisoned| eyre::eyre!("telemetry store poisoned"))?;
@@ -312,20 +498,24 @@ fn run_terminal(
                 .selected_index(stats)
                 .and_then(|index| store.iter().nth(index));
             let summary = selected.map(event_summary);
-            let needs_detail = matches!(navigation.screen, Screen::Detail { .. })
-                && selected.is_some()
-                && details_cache.as_ref().is_none_or(|(id, old_width, _)| {
-                    Some(*id) != navigation.selected || *old_width != width
-                });
-            (
-                records,
-                stats,
-                summary,
-                needs_detail.then(|| selected.cloned()).flatten(),
-            )
+            let detail_input = if matches!(navigation.screen, Screen::Detail { .. }) {
+                navigation
+                    .selected
+                    .and_then(|id| detail_update(&store, id, width, details_cache.as_mut()))
+            } else {
+                None
+            };
+            (records, stats, summary, detail_input)
         };
-        if let (Some(id), Some(record)) = (navigation.selected, selected_record) {
-            details_cache = Some((id, width, detail_rows(&detail_text(&record), width)));
+        if let (Some(id), Some((selected, related, link))) = (navigation.selected, detail_input) {
+            details_cache = Some(detail_cache(
+                id,
+                width,
+                stats,
+                &selected,
+                related.as_ref(),
+                link,
+            ));
         }
         for record in &records {
             if let Some(file) = file.as_mut() {
@@ -356,9 +546,9 @@ fn run_terminal(
             frame.render_widget(Paragraph::new(text), frame.area());
         })?;
         if let Screen::Detail { scroll } = &mut navigation.screen
-            && let Some((_, _, rows)) = &details_cache
+            && let Some(cache) = &details_cache
         {
-            *scroll = (*scroll).min(rows.len().saturating_sub(1));
+            *scroll = (*scroll).min(cache.rows.len().saturating_sub(1));
         }
         if cancellation.bail_if_cancelled().is_err() {
             break;
@@ -378,7 +568,7 @@ fn run_terminal(
 fn view_text(
     navigation: &Navigation,
     stats: StoreStats,
-    cache: Option<&(u64, u16, Vec<String>)>,
+    cache: Option<&DetailCache>,
     overview: &str,
     summary: Option<&str>,
     height: u16,
@@ -390,15 +580,17 @@ fn view_text(
             summary.unwrap_or("none or evicted")
         ),
         Screen::Detail { scroll } => match (navigation.selected_index(stats), cache) {
-            (Some(_), Some((id, _, rows))) if Some(*id) == navigation.selected => {
-                let start = scroll.min(rows.len().saturating_sub(1));
+            (Some(_), Some(cache)) if Some(cache.id) == navigation.selected => {
+                let start = scroll.min(cache.rows.len().saturating_sub(1));
                 let height = usize::from(height.saturating_sub(2));
                 format!(
                     "Event {} · row {}/{} · arrows/PgUp/PgDn · Esc back\n{}",
-                    id,
+                    cache.id,
                     start + 1,
-                    rows.len(),
-                    rows.iter()
+                    cache.rows.len(),
+                    cache
+                        .rows
+                        .iter()
                         .skip(start)
                         .take(height)
                         .cloned()

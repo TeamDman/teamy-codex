@@ -1,5 +1,8 @@
 #![cfg(feature = "telemetry")]
 
+#[path = "../examples/send_synthetic_otel.rs"]
+mod synthetic_sender;
+
 use std::io::Write;
 use teamy_codex::telemetry::terminal_capture::TerminalCapture;
 use teamy_codex::telemetry::terminal_view::{
@@ -71,6 +74,20 @@ fn cursor_counts_loss_and_does_not_repeat_records() {
     );
     assert!(cursor.take(&store).is_empty());
     assert!(event_summary(&result_record()).contains("output truncated"));
+}
+
+#[test]
+fn non_tool_events_do_not_claim_an_unknown_tool() {
+    let record = TelemetryRecord {
+        event_name: "codex.api_request".into(),
+        ..TelemetryRecord::default()
+    };
+    assert_eq!(event_summary(&record), "codex.api_request");
+    let record = TelemetryRecord {
+        event_name: "codex.tool_result".into(),
+        ..TelemetryRecord::default()
+    };
+    assert_eq!(event_summary(&record), "codex.tool_result · unknown tool");
 }
 
 #[test]
@@ -286,6 +303,164 @@ fn adapted_tool_records_correlate_without_inventing_a_source() {
 }
 
 #[test]
+fn detail_correlation_updates_after_late_result_and_keeps_uncertainty_visible() {
+    use teamy_codex::telemetry::Correlation;
+    use teamy_codex::telemetry::terminal_view::{detail_cache, detail_update};
+    let mut store = RecordStore::new(StoreLimits {
+        max_records: 8,
+        max_logical_bytes: 32768,
+    });
+    let mut decision = result_record();
+    decision.event_name = "codex.tool_decision".into();
+    decision.attributes.extend([
+        Attribute {
+            key: "conversation.id".into(),
+            value: TelemetryValue::String("synthetic-session".into()),
+        },
+        Attribute {
+            key: "call_id".into(),
+            value: TelemetryValue::String("synthetic-call".into()),
+        },
+    ]);
+    assert!(store.push(decision.clone()));
+    let (selected, related, link) = detail_update(&store, 1, 80, None).unwrap();
+    assert_eq!(link.unwrap().correlation, Correlation::Unmatched);
+    let mut cache = detail_cache(1, 80, store.stats(), &selected, related.as_ref(), link);
+    assert!(
+        cache
+            .rows
+            .iter()
+            .any(|row| row.contains("unmatched in retained history"))
+    );
+    let mut result = decision.clone();
+    result.event_name = "codex.tool_result".into();
+    assert!(store.push(result.clone()));
+    let (selected, related, link) = detail_update(&store, 1, 80, Some(&mut cache)).unwrap();
+    assert_eq!(link.unwrap().correlation, Correlation::SourceUnknown);
+    assert_eq!(link.unwrap().related, Some(2));
+    cache = detail_cache(1, 80, store.stats(), &selected, related.as_ref(), link);
+    let text = cache.rows.join("\n");
+    assert!(text.contains("producer source unknown"));
+    assert!(text.contains("Related codex.tool_result"));
+    assert!(text.contains("Command:"));
+    assert!(store.push(TelemetryRecord {
+        event_name: "other".into(),
+        ..TelemetryRecord::default()
+    }));
+    assert!(detail_update(&store, 1, 80, Some(&mut cache)).is_none());
+    assert_eq!(cache.version, store.stats().accepted);
+    assert!(store.push(result));
+    let (selected, related, link) = detail_update(&store, 1, 80, Some(&mut cache)).unwrap();
+    assert_eq!(link.unwrap().correlation, Correlation::Ambiguous);
+    assert!(related.is_none());
+    let ambiguous = detail_cache(1, 80, store.stats(), &selected, None, link)
+        .rows
+        .join("\n");
+    assert!(ambiguous.contains("ambiguous: duplicate"));
+    assert!(!ambiguous.contains("Related codex.tool_result"));
+}
+
+#[test]
+fn detail_correlation_requires_identity_and_does_not_cross_sources() {
+    use teamy_codex::telemetry::Correlation;
+    use teamy_codex::telemetry::terminal_view::tool_link;
+    let mut store = RecordStore::new(StoreLimits {
+        max_records: 2,
+        max_logical_bytes: 8192,
+    });
+    assert!(store.push(result_record()));
+    assert_eq!(
+        tool_link(&store, 0).unwrap().correlation,
+        Correlation::MissingIdentity
+    );
+    let mut result = result_record();
+    result.attributes.extend([
+        Attribute {
+            key: "conversation.id".into(),
+            value: TelemetryValue::String("session".into()),
+        },
+        Attribute {
+            key: "call_id".into(),
+            value: TelemetryValue::String("call".into()),
+        },
+    ]);
+    result.resource_attributes.push(Attribute {
+        key: "service.instance.id".into(),
+        value: TelemetryValue::String("one".into()),
+    });
+    let mut decision = result.clone();
+    decision.event_name = "codex.tool_decision".into();
+    let mut exact = RecordStore::new(StoreLimits {
+        max_records: 2,
+        max_logical_bytes: 8192,
+    });
+    assert!(exact.push(result.clone()));
+    assert!(exact.push(decision.clone()));
+    assert_eq!(
+        tool_link(&exact, 0).unwrap().correlation,
+        Correlation::Exact
+    );
+    assert_eq!(tool_link(&exact, 0).unwrap().related, Some(2));
+    decision.resource_attributes[0].value = TelemetryValue::String("two".into());
+    assert!(store.push(result));
+    assert!(store.push(decision));
+    assert_eq!(
+        tool_link(&store, 0).unwrap().correlation,
+        Correlation::Unmatched
+    );
+    assert_eq!(
+        tool_link(&store, 1).unwrap().correlation,
+        Correlation::Unmatched
+    );
+    assert!(teamy_codex::telemetry::terminal_view::detail_update(&store, 1, 80, None).is_none());
+}
+
+#[test]
+fn release_shaped_event_name_attribute_and_string_fields_render() {
+    let record = TelemetryRecord {
+        event_name: "event codex-rs/otel/src/events/shared.rs:123".into(),
+        attributes: vec![
+            Attribute {
+                key: "event.name".into(),
+                value: TelemetryValue::String("codex.tool_result".into()),
+            },
+            Attribute {
+                key: "tool_name".into(),
+                value: TelemetryValue::String("exec_command".into()),
+            },
+            Attribute {
+                key: "arguments".into(),
+                value: TelemetryValue::String(
+                    r#"{"cmd":"Write-Output 'synthetic'","shell":"powershell"}"#.into(),
+                ),
+            },
+            Attribute {
+                key: "success".into(),
+                value: TelemetryValue::String("true".into()),
+            },
+            Attribute {
+                key: "duration_ms".into(),
+                value: TelemetryValue::String("42".into()),
+            },
+            Attribute {
+                key: "output_truncated".into(),
+                value: TelemetryValue::Bool(false),
+            },
+            Attribute {
+                key: "output".into(),
+                value: TelemetryValue::String("synthetic".into()),
+            },
+        ],
+        ..TelemetryRecord::default()
+    };
+    assert!(event_summary(&record).contains("codex.tool_result · exec_command · success · 42 ms"));
+    let detail = detail_text(&record);
+    assert!(detail.contains("Command:\nWrite-Output 'synthetic'"));
+    assert!(detail.contains("Shell: PowerShell (powershell)"));
+    assert!(detail.contains("Output preview:\nsynthetic"));
+}
+
+#[test]
 fn process_logs_are_acknowledged_only_after_delivery() {
     let capture = TerminalCapture::default();
     let mut writer = capture.make_writer();
@@ -397,32 +572,46 @@ fn inline_backend_inserts_safe_log_above_view() {
 #[test]
 fn loopback_receiver_accepts_synthetic_protobuf_and_shuts_down() {
     use std::sync::{Arc, Mutex};
+    use teamy_codex::telemetry::Correlation;
+    use teamy_codex::telemetry::terminal_view::{detail_cache, detail_update};
     use teamy_tracing::telemetry::otlp_http::{Receiver, ReceiverLimits};
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .unwrap();
     runtime.block_on(async {
         let store = Arc::new(Mutex::new(RecordStore::default()));
-        let receiver = Receiver::bind_loopback(0, ReceiverLimits::default(), Arc::clone(&store)).await.unwrap();
+        let receiver = Receiver::bind_loopback(0, ReceiverLimits::default(), Arc::clone(&store))
+            .await
+            .unwrap();
         let address = receiver.address();
         assert!(address.ip().is_loopback());
-        let name = b"codex.tool_result";
-        let mut record = vec![0x62, u8::try_from(name.len()).unwrap()];
-        record.extend_from_slice(name);
-        let mut scope = vec![0x12, u8::try_from(record.len()).unwrap()]; scope.extend(record);
-        let mut resource = vec![0x12, u8::try_from(scope.len()).unwrap()]; resource.extend(scope);
-        let mut request = vec![0x0a, u8::try_from(resource.len()).unwrap()]; request.extend(resource);
-        let mut socket = tokio::net::TcpStream::connect(address).await.unwrap();
-        let headers = format!("POST /v1/logs HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/x-protobuf\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", request.len());
-        socket.write_all(headers.as_bytes()).await.unwrap();
-        socket.write_all(&request).await.unwrap();
-        let mut response = Vec::new(); socket.read_to_end(&mut response).await.unwrap();
-        assert!(response.starts_with(b"HTTP/1.1 200"));
+        tokio::task::spawn_blocking(move || synthetic_sender::send(address.port()))
+            .await
+            .unwrap()
+            .unwrap();
         let mut cursor = TelemetryCursor::default();
-        assert_eq!(cursor.take(&store.lock().unwrap()).len(), 1);
-        assert_eq!(cursor.results, 1);
+        let text = {
+            let store_guard = store.lock().unwrap();
+            assert_eq!(cursor.take(&store_guard).len(), 2);
+            assert_eq!((cursor.results, cursor.decisions), (1, 1));
+            let (selected, related, link) = detail_update(&store_guard, 1, 100, None).unwrap();
+            assert_eq!(link.unwrap().correlation, Correlation::SourceUnknown);
+            detail_cache(
+                1,
+                100,
+                store_guard.stats(),
+                &selected,
+                related.as_ref(),
+                link,
+            )
+            .rows
+            .join("\n")
+        };
+        assert!(text.contains("Write-Output 'synthetic'"));
+        assert!(text.contains("Shell: PowerShell (powershell)"));
+        assert!(text.contains("Related codex.tool_decision"));
+        assert!(text.contains("producer source unknown"));
         receiver.shutdown().await.unwrap();
         let listener = tokio::net::TcpListener::bind(address).await.unwrap();
         drop(listener);

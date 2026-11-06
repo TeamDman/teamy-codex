@@ -48,14 +48,14 @@ Do not run this while the graphics hold is active. After explicit user opt-in,
 build both optional binaries without activating them:
 
 ```powershell
-cargo build --offline --locked --features windows-tray --bin teamy-codex-tray --bin teamy-codex-ui
+cargo build --offline --locked --features windows-tray --bin teamy-codex-tray --bin teamy-codex-ui --example send_synthetic_otel
 ```
 
 The proposed smoke test lasts at most five minutes: one unelevated owner,
 one app-owned console child, and an IPv4 loopback-only HTTP listener on an
 OS-selected port. It creates a temporary tray icon and window. It neither
 registers startup nor installs a service, creates a credential or alters
-firewall or telemetry settings. The test sends only the fabricated event
+firewall or telemetry settings. The test sends only the fabricated events
 below and uses no event or process-log file. The console Close, tray Show and
 tray Exit actions affect the new test instance. If normal Exit does not finish,
 report the remaining process and stop; do not kill unrelated processes.
@@ -70,26 +70,24 @@ $trayProcess = Start-Process -FilePath $trayExe -ArgumentList '--port','0' -Wind
 
 Read the assigned loopback port from the new console. Close that console with
 its window Close button and confirm `$trayProcess.HasExited` is `False`; the
-original terminal must remain visible. With the child closed, send a
-fabricated event to the displayed port from the original PowerShell terminal:
+original terminal must remain visible. With the child closed, send two
+fabricated events to the displayed port from the original PowerShell terminal:
 
 ```powershell
 $testPort = 12345 # Replace with the port shown in the new console.
-$name = [Text.Encoding]::UTF8.GetBytes('codex.tool_result')
-$record = [byte[]](@(0x62, $name.Length) + $name)
-$scope = [byte[]](@(0x12, $record.Length) + $record)
-$resource = [byte[]](@(0x12, $scope.Length) + $scope)
-$body = [byte[]](@(0x0a, $resource.Length) + $resource)
-Invoke-WebRequest -Uri "http://127.0.0.1:${testPort}/v1/logs" -Method Post -ContentType 'application/x-protobuf' -Body $body
+& .\target\debug\examples\send_synthetic_otel.exe $testPort
 ```
 
 Right-click the **Teamy** notification icon, including the overflow area, and
-select **Show console**. Confirm the reopened child replays the synthetic
-result and its retained event count is one.
+select **Show console**. Confirm the reopened child replays two events. Select
+either with Up/Down and press Enter: detail should show the paired decision and
+result, the invented `Write-Output 'synthetic'` command and an unknown-source
+correlation warning. The sample's `approved` decision is fabricated; it is not
+an actual authorization or a command that was executed.
 Select **Exit** and check `$trayProcess.WaitForExit(10000)` and
 `$trayProcess.ExitCode` return `True` and zero; the app-owned console and tray
 icon should disappear, leaving the original terminal open. This test sends
-only the fabricated event and reads no Codex session data. It does not change
+only fabricated events and reads no Codex session data. It does not change
 Codex configuration or write an event file. Process-log replay is covered
 synthetically but still needs a live producer to qualify visually.
 

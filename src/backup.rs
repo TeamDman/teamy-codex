@@ -851,6 +851,11 @@ fn all_threads(source: &Path) -> eyre::Result<Vec<ThreadSummary>> {
         source,
         &ThreadListArgs {
             limit: Some(BACKUP_THREAD_LIMIT),
+            active: false,
+            observe: false,
+            isolated: false,
+            codex_bin: None,
+            socket: None,
             all: true,
             archived: false,
         },

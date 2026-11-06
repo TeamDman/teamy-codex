@@ -1,7 +1,7 @@
 //! Console-only child. Standard streams are not used for its terminal.
 use super::terminal_foundation::{InlineTerminal, print_above};
 use super::terminal_navigation::{Navigation, Screen};
-use super::terminal_view::{detail_rows, detail_text, event_summary};
+use super::terminal_view::{DetailCache, detail_cache, detail_update, event_summary};
 use super::tray_visibility::SHOW_PROBE_KIND;
 use super::ui_process::{Message, connect_child, read_next, write_message};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
@@ -49,6 +49,14 @@ fn open_console() -> Result<(std::fs::File, std::fs::File)> {
     Ok((input, output))
 }
 
+fn receiver_address(args: &[std::ffi::OsString]) -> Result<String> {
+    Ok(args
+        .first()
+        .and_then(|arg| arg.to_str())
+        .context("missing receiver address")?
+        .to_owned())
+}
+
 fn present<B: Backend>(
     terminal: &mut Terminal<B>,
     records: &mut RecordStore,
@@ -78,7 +86,7 @@ where
 fn view_text(
     address: &str,
     nav: &Navigation,
-    cache: Option<&(u64, u16, Vec<String>)>,
+    cache: Option<&DetailCache>,
     records: &RecordStore,
     gap: (u64, u64),
     height: u16,
@@ -98,18 +106,21 @@ fn view_text(
             )
         }
         Screen::Detail { scroll } => match (cache, nav.selected_index(stats)) {
-            (Some((id, _, rows)), Some(_)) if Some(*id) == nav.selected => {
-                let start = scroll.min(rows.len().saturating_sub(1));
+            (Some(cache), Some(_)) if Some(cache.id) == nav.selected => {
+                let start = scroll.min(cache.rows.len().saturating_sub(1));
                 format!(
                     "Event {id} · row {}/{} · arrows/PgUp/PgDn · Esc back\n{}",
                     start + 1,
-                    rows.len(),
-                    rows.iter()
+                    cache.rows.len(),
+                    cache
+                        .rows
+                        .iter()
                         .skip(start)
                         .take(usize::from(height.saturating_sub(2)))
                         .cloned()
                         .collect::<Vec<_>>()
-                        .join("\n")
+                        .join("\n"),
+                    id = cache.id
                 )
             }
             _ => "Selected event was evicted. Press Esc to return.".into(),
@@ -155,11 +166,7 @@ fn handle_key(key: event::KeyEvent, nav: &mut Navigation, stats: StoreStats) -> 
 /// Returns an error for bootstrap, protocol, terminal or output failures.
 pub fn main() -> Result<()> {
     let args = std::env::args_os().skip(1).collect::<Vec<_>>();
-    let address = args
-        .first()
-        .and_then(|arg| arg.to_str())
-        .context("missing receiver address")?
-        .to_owned();
+    let address = receiver_address(&args)?;
     let (mut input, mut output) = connect_child(&args)?;
     let Some(Message::Hello { generation }) = read_next(&mut input)? else {
         bail!("missing UI hello");
@@ -173,7 +180,7 @@ pub fn main() -> Result<()> {
     let mut nav = Navigation::default();
     let mut gap = (0u64, 0u64);
     let mut last_sequence = 0u64;
-    let mut cache: Option<(u64, u16, Vec<String>)> = None;
+    let mut cache: Option<DetailCache> = None;
     'ui: loop {
         for _ in 0..8 {
             match receiver.try_recv() {
@@ -214,16 +221,19 @@ pub fn main() -> Result<()> {
         let stats = records.stats();
         nav.initialize_selection(stats);
         let width = terminal.size()?.width;
-        let selected = nav
-            .selected_index(stats)
-            .and_then(|index| records.iter().nth(index));
         if matches!(nav.screen, Screen::Detail { .. })
-            && let (Some(id), Some(record)) = (nav.selected, selected)
-            && cache
-                .as_ref()
-                .is_none_or(|(old_id, old_width, _)| *old_id != id || *old_width != width)
+            && let Some(id) = nav.selected
+            && let Some((selected, related, link)) =
+                detail_update(&records, id, width, cache.as_mut())
         {
-            cache = Some((id, width, detail_rows(&detail_text(record), width)));
+            cache = Some(detail_cache(
+                id,
+                width,
+                stats,
+                &selected,
+                related.as_ref(),
+                link,
+            ));
         }
         terminal.draw(|frame| {
             let text = view_text(
@@ -237,9 +247,9 @@ pub fn main() -> Result<()> {
             frame.render_widget(Paragraph::new(text), frame.area());
         })?;
         if let Screen::Detail { scroll } = &mut nav.screen
-            && let Some((_, _, rows)) = &cache
+            && let Some(cache) = &cache
         {
-            *scroll = (*scroll).min(rows.len().saturating_sub(1));
+            *scroll = (*scroll).min(cache.rows.len().saturating_sub(1));
         }
         if event::poll(Duration::from_millis(100))?
             && let Event::Key(key) = event::read()?
@@ -299,8 +309,8 @@ mod tests {
             records.stats()
         ));
         let id = nav.selected.unwrap();
-        let rows = detail_rows(&detail_text(records.iter().next().unwrap()), 64);
-        let cache = (id, 64, rows);
+        let record = records.iter().next().unwrap();
+        let cache = detail_cache(id, 64, records.stats(), record, None, None);
         let detail = view_text("synthetic", &nav, Some(&cache), &records, (2, 1), 12);
         assert!(detail.contains("Get-Date\\u{1b}"));
         assert!(!detail.contains('\u{1b}'));

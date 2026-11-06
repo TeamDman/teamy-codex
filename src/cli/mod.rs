@@ -1,6 +1,7 @@
 pub mod app_server;
 pub mod backup;
 pub mod chatgpt;
+pub mod dashboard;
 pub mod global_args;
 pub mod output;
 #[cfg(feature = "telemetry")]
@@ -60,6 +61,7 @@ pub enum Command {
     Usage(usage::UsageArgs),
     #[cfg(feature = "telemetry")]
     Telemetry(telemetry::TelemetryArgs),
+    Dashboard(dashboard::DashboardArgs),
 }
 
 impl Command {
@@ -80,6 +82,7 @@ impl Command {
             Self::Usage(args) => args.invoke(global_args, cancellation_token).await,
             #[cfg(feature = "telemetry")]
             Self::Telemetry(args) => args.invoke(cancellation_token).await,
+            Self::Dashboard(args) => args.invoke(global_args, cancellation_token).await,
         }
     }
 }

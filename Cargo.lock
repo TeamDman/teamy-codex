@@ -2188,6 +2188,8 @@ dependencies = [
  "facet-pretty",
  "figue",
  "humantime",
+ "opentelemetry-proto",
+ "prost",
  "ratatui",
  "rusqlite",
  "sha2",

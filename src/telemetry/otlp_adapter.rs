@@ -40,11 +40,7 @@ pub fn from_telemetry_record(record: &TelemetryRecord) -> CodexEvent {
         source: text(source.map(|item| &item.value)),
         session: text(record.attribute("conversation.id")),
         call_id: text(record.attribute("call_id")),
-        name: if record.event_name.is_empty() {
-            text(record.attribute("event.name")).unwrap_or_default()
-        } else {
-            record.event_name.clone()
-        },
+        name: text(record.attribute("event.name")).unwrap_or_else(|| record.event_name.clone()),
         fields: record.attributes.iter().map(field).collect(),
     }
 }

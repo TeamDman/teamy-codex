@@ -2,6 +2,7 @@
 #![deny(clippy::disallowed_macros)]
 #![deny(clippy::disallowed_types)]
 
+pub mod active_threads;
 mod backup;
 mod chatgpt_response_json;
 pub mod cli;
@@ -106,6 +107,7 @@ pub fn main() -> eyre::Result<()> {
         cli::Command::Usage(_) => "usage",
         #[cfg(feature = "telemetry")]
         cli::Command::Telemetry(_) => "telemetry",
+        cli::Command::Dashboard(_) => "dashboard",
     };
     let _command_span = tracing::info_span!("command", command = command_name).entered();
     tracing::debug!(command = command_name, "Dispatching command");

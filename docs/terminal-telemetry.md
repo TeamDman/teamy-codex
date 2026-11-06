@@ -17,7 +17,11 @@ omitted shell is shown as unknown or implicit. The original argument text and
 complete admitted record remain available. The view reports a sender-declared
 truncation but cannot establish complete raw process output. Scroll with
 Up/Down, Page Up/Down, Home or End, and use Escape to
-return. This only shows what the sender delivered, including any upstream
+return. When a selected tool decision and result have a unique matching session,
+call and source, their detail views include the related record. A missing source
+is labelled uncertain; duplicate or missing identifiers remain unpaired. The
+overview still navigates individual events rather than grouped calls. This only
+shows what the sender delivered, including any upstream
 truncation; it does not execute commands. An evicted selection is identified
 explicitly. Counts distinguish accepted records, retained
 records, evictions, rejections, records missed before display, upstream output
@@ -97,7 +101,12 @@ environment variable is isolated. The test may contact the model provider.
 
 Even with raw prompt logging disabled, exported records can contain command
 arguments, output previews, conversation identifiers, model and runtime
-metadata, and other tool fields. The default sender output limit is a preview,
+metadata, host name, account identifiers, email addresses and other tool fields. The
+inspected 0.156.1 release's
+[shared log fields](https://github.com/openai/codex/blob/rust-v0.156.1/codex-rs/otel/src/events/shared.rs)
+include `user.account_id` and `user.email` when present, and its
+[log resource](https://github.com/openai/codex/blob/rust-v0.156.1/codex-rs/otel/src/provider.rs)
+can include the host name. The default sender output limit is a preview,
 not a guarantee of complete stdout. Do not select `--events-file` or
 `--log-file` for this test: retained events live in bounded process memory,
 and the terminal or its host may retain rendered text in scrollback. The

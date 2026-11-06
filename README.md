@@ -10,6 +10,9 @@ repository.
 ```powershell
 cargo run -- thread list
 cargo run -- thread list --limit 20 --all
+cargo run -- --output-format json thread list --active
+cargo run -- thread list --observe --isolated --limit 20
+cargo run -- dashboard
 cargo run -- thread inventory --active-since 1week --cwd-under G:\Programming\Repos --manifest .\inventory-manifest.json
 cargo run -- thread message list <thread-id>
 cargo run -- app-server thread list --limit 25
@@ -32,6 +35,12 @@ An isolated sandbox can have a different user profile and Codex state from the
 desktop app. For a desktop-visible task, run in the intended host context or
 explicitly select its Codex home; do not infer visibility from a sandbox-local
 `thread/list` result.
+
+`thread list --active` and `dashboard` share a typed observation API with explicit
+source coverage, runtime status, and safely redacted latest commands. They use
+the supported shared app-server proxy; an unavailable proxy does not prove
+that desktop work is idle. See [working-thread observation](docs/active-thread-observation.md)
+for PowerShell polling examples and scope limits.
 
 `app-server thread list` launches an owned `codex app-server` child for one
 read-only page and then terminates and reaps it. It includes CLI, VS Code, and

@@ -46,6 +46,10 @@ teamy-tracing = { git = "https://github.com/TeamDman/teamy-tracing.git", rev = "
 owned-facet-json = { package = "teamy-facet-json", version = "=0.50.0-rc.9", default-features = false, optional = true }
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"], optional = true }
 
+[dev-dependencies]
+opentelemetry-proto = { version = "0.31.0", default-features = false, features = ["gen-tonic-messages", "logs"] }
+prost = "0.14.1"
+
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62.2", features = [
     "Win32_Globalization",

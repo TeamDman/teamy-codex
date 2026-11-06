@@ -627,8 +627,80 @@ impl<R: BufRead, W: Write> AppServerStdio<R, W> {
         Ok(id)
     }
 
-    fn send<'a, T: Facet<'a>>(&mut self, value: &'a T) -> eyre::Result<()> {
+    fn send<'a, T: Facet<'a>>(&mut self, value: &T) -> eyre::Result<()> {
         write_json_line(&mut self.writer, value)
+    }
+
+    /// Handshake without making decisions on another client's server requests.
+    ///
+    /// # Errors
+    /// Returns an error if the handshake fails.
+    pub fn initialize_observer(&mut self) -> eyre::Result<()> {
+        let _: EmptyParams = self.observe_rpc(
+            "initialize",
+            InitializeParams {
+                client_info: ClientInfo {
+                    name: "teamy-codex-observer",
+                    title: "Teamy Codex Observer",
+                    version: env!("CARGO_PKG_VERSION"),
+                },
+            },
+        )?;
+        self.send(&InitializedNotification {
+            method: "initialized",
+            params: EmptyParams {},
+        })
+    }
+
+    /// Read-only observer RPC. Unsolicited requests are never answered, so observing
+    /// a shared runtime cannot approve or deny another client's work.
+    ///
+    /// # Errors
+    /// Returns an error for malformed, rejected, or oversized messages.
+    pub fn observe_rpc<'a, P: Facet<'a>, T: Facet<'static>>(
+        &mut self,
+        method: &'a str,
+        params: P,
+    ) -> eyre::Result<T> {
+        #[derive(Facet)]
+        struct ObserverRequest<'b, P> {
+            id: u64,
+            method: &'b str,
+            params: P,
+        }
+        if !matches!(
+            method,
+            "initialize"
+                | "thread/list"
+                | "thread/loaded/list"
+                | "thread/read"
+                | "thread/items/list"
+                | "thread/turns/list"
+        ) {
+            bail!("observer method is not read-only");
+        }
+        let id = self.allocate_id()?;
+        self.send(&ObserverRequest { id, method, params })?;
+        for _ in 0..MAX_MESSAGES_PER_PHASE {
+            let line = self.read_line()?;
+            let envelope: RpcEnvelope<'_> = facet_json::from_str_borrowed(&line)?;
+            if envelope.method.is_some() {
+                continue;
+            }
+            let raw_id = envelope.id.context("observer response omitted id")?;
+            let response_id: u64 = facet_json::from_str(raw_id.as_str())?;
+            if response_id != id {
+                bail!("unexpected observer response id");
+            }
+            if envelope.error.is_some() {
+                bail!("observer RPC rejected by server");
+            }
+            let result = envelope
+                .result
+                .context("observer response omitted result")?;
+            return facet_json::from_str(result.as_str()).wrap_err("invalid observer result");
+        }
+        bail!("too many observer messages before response")
     }
 
     fn await_response(
@@ -832,7 +904,7 @@ pub(crate) fn send_turn_interrupt<W: Write>(
     )
 }
 
-fn write_json_line<'a, T: Facet<'a>, W: Write>(writer: &mut W, value: &'a T) -> eyre::Result<()> {
+fn write_json_line<'a, T: Facet<'a>, W: Write>(writer: &mut W, value: &T) -> eyre::Result<()> {
     let mut line = facet_json::to_vec(value).wrap_err("could not serialize JSON-RPC message")?;
     if line.len() > MAX_MESSAGE_BYTES {
         bail!("outgoing JSON-RPC message exceeds size limit");
@@ -847,6 +919,24 @@ fn write_json_line<'a, T: Facet<'a>, W: Write>(writer: &mut W, value: &'a T) -> 
 mod tests {
     use super::{AppServerStdio, TurnFinalStatus};
     use std::io::{BufReader, Cursor};
+
+    #[test]
+    fn observer_never_answers_another_clients_approval_or_mutates() {
+        let input = concat!(
+            "{\"id\":90,\"method\":\"item/commandExecution/requestApproval\",\"params\":{}}\n",
+            "{\"id\":1,\"result\":{}}\n"
+        );
+        let mut client = AppServerStdio::new(BufReader::new(Cursor::new(input)), Vec::new());
+        client.initialize_observer().unwrap();
+        assert!(
+            client
+                .observe_rpc::<_, super::EmptyParams>("turn/start", super::EmptyParams {})
+                .is_err()
+        );
+        let output = String::from_utf8(client.writer).unwrap();
+        assert!(!output.contains("\"id\":90"));
+        assert!(!output.contains("turn/start"));
+    }
 
     #[test]
     fn handshake_and_list_tolerate_notifications_and_deny_server_requests() {
